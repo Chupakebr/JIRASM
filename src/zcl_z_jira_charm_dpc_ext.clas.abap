@@ -44,7 +44,7 @@ CLASS ZCL_Z_JIRA_CHARM_DPC_EXT IMPLEMENTATION.
     IF sy-subrc = 0.
       "1. update of existing DOC
       DATA(lv_process_type) = cl_hf_helper=>get_proc_type_of_chng_doc( im_change_document_id = lv_guid ).
-      SELECT SINGLE sm_status FROM zjira_mapping INTO @DATA(lv_estat)
+      SELECT SINGLE sm_status, sm_action FROM zjira_mapping INTO ( @DATA(lv_estat), @data(lv_action_check) )
         WHERE syst = @sy-sysid
         AND process_type = @lv_process_type
         AND direction = 'I'
@@ -54,11 +54,23 @@ CLASS ZCL_Z_JIRA_CHARM_DPC_EXT IMPLEMENTATION.
         " exception - missing cuatomizing
       ENDIF.
 
-      lo_jira_api->update_status(
+*      "DATA lv_action_check TYPE ppfdtt.
+*      " E0016 In UAT  ZMMJ_ZSET_TO_UAT
+*      " E0009 Succesfullt Tested  ZMMJ_TESTED_AND_OK_MJ
+*      " E0017 Deployent Approved ZMMJ_ZSET_TO_DEPL_APPROVED
+*
+*      CASE lv_estatus.
+*        WHEN 'E0016'. lv_action_check = 'ZMMJ_ZSET_TO_UAT'.
+*        WHEN 'E0009'. lv_action_check = 'ZMMJ_TESTED_AND_OK_MJ'.
+*        WHEN 'E0017'. lv_action_check = 'ZMMJ_ZSET_TO_DEPL_APPROVED'.
+*      ENDCASE.
+
+      ls_attributes_resp = lo_jira_api->update_status(
         EXPORTING
           iv_guid            =   lv_guid
           iv_estat           =   lv_estat
-     ).
+          iv_action_name_check = lv_action_check ).
+      " ZMMJ
       "Prepering reply
       CLEAR er_entity.
       CONCATENATE 'CR linked with Jira guid ' er_entity-jira_guid ' exists and will be updated.' INTO er_entity-messageresp.

@@ -5,6 +5,40 @@ class ZCL_Z_JIRA_CHARM_INTEGRATION definition
 
 public section.
 
+  class-methods SEND_NOTIFICATION
+    importing
+      !IV_RFC_GUID type CRMT_OBJECT_GUID
+    returning
+      value(RV_STATUS) type PPFDTSTAT .
+  class-methods SET_STATUS_BY_JOB
+    importing
+      !IV_ORDER_GUID type CRMT_OBJECT_GUID
+    returning
+      value(RV_SUCCESS) type BOOLEAN .
+  class-methods GET_JIRA_ID
+    importing
+      !IV_GUID type CRMT_OBJECT_GUID
+    exporting
+      !EV_JIRA_ID type CRMT_PO_NUMBER_SOLD .
+  class-methods POST
+    importing
+      !IV_BODY type STRING
+      !IV_URI type STRING
+    exporting
+      !EV_HTTP_RESPONSE type STRING
+      !EV_HTTP_RESPONSE_STATUS_CODE type STRING .
+  class-methods SET_JIRA_STATUS
+    importing
+      !IV_GUID type CRMT_OBJECT_GUID
+      !IV_STATUS type CRM_J_STATUS
+    exporting
+      !ES_ERROR_MESSAGE type SYMSG .
+  class-methods SET_STATUS_BY_PPF
+    importing
+      !IV_OBJECT_GUID type CRMT_OBJECT_GUID
+      !IV_ESTATUS type J_ESTAT
+    returning
+      value(RV_EXEC_STATUS) type PPFDTSTAT .
   class-methods SET_IBASE
     importing
       !IV_GUID type CRMT_OBJECT_GUID
@@ -16,7 +50,10 @@ public section.
   class-methods UPDATE_STATUS
     importing
       !IV_GUID type CRMT_OBJECT_GUID
-      !IV_ESTAT type J_ESTAT .
+      !IV_ESTAT type J_ESTAT
+      !IV_ACTION_NAME_CHECK type PPFDTT
+    returning
+      value(RS_ATTRIBUTES_RESP) type ZJIRA_CHARM_STRU .
   methods CONSTRUCTOR .
   methods CREATE_NC
     importing
@@ -843,6 +880,197 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
   ENDMETHOD.
 
 
+  METHOD get_jira_id.
+
+    SELECT SINGLE t_s~po_number_sold FROM crmd_link AS t_l LEFT JOIN
+      crmd_sales AS t_s ON t_l~guid_set = t_s~guid INTO @ev_jira_id
+    WHERE t_l~guid_hi = @iv_guid AND po_number_sold IS NOT NULL. "#EC CI_NOFIELD
+
+  ENDMETHOD.
+
+
+  method post.
+
+    data: lo_http_client     type ref to if_http_client,
+          lo_rest_client     type ref to cl_rest_http_client,
+          lv_url             type        string,
+          http_status        type        string,
+          token              type        string,
+          agreements         type        string,
+          lo_response        type ref to if_rest_entity,
+          lv_header_guid     type crmt_object_guid,
+          lv_object_type_ref type swo_objtyp,
+          iv_transactionid   type string,
+          lv_message         type i.
+
+* Create HTTP intance using RFC restination created
+
+    cl_http_client=>create_by_destination(
+     exporting
+       destination              = 'LAYER7'            " Logical destination (specified in function call)
+     importing
+       client                   = lo_http_client    " HTTP Client Abstraction
+     exceptions
+       argument_not_found       = 1
+       destination_not_found    = 2
+       destination_no_authority = 3
+       plugin_not_active        = 4
+       internal_error           = 5
+       others                   = 6
+    ).
+
+
+* Create REST client instance
+    create object lo_rest_client
+      exporting
+        io_http_client = lo_http_client.
+
+* Set HTTP version
+    lo_http_client->request->set_version( if_http_request=>co_protocol_version_1_0 ).
+    if lo_http_client is bound and lo_rest_client is bound.
+
+* Set the URI if any
+      cl_http_utility=>set_request_uri(
+        exporting
+          request = lo_http_client->request    " HTTP Framework (iHTTP) HTTP Request
+          uri     = iv_uri                     " URI String (in the Form of /path?query-string)
+      ).
+
+* HTTP GET
+      lo_rest_client->if_rest_client~get( ).
+
+* HTTP_POST
+
+      data: lo_json        type ref to cl_clb_parse_json,
+            lo_request     type ref to if_rest_entity,
+            lo_sql         type ref to cx_sy_open_sql_db,
+            status         type  string,
+            reason         type  string,
+            response       type  string,
+            content_length type  string,
+            location       type  string,
+            content_type   type  string,
+            lv_status      type  i.
+
+* Set Payload or body ( JSON or XML)
+      lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
+      lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
+      lo_request->set_string_data( iv_body ).
+
+* Set request header if any
+      call method lo_rest_client->if_rest_client~set_request_header
+        exporting
+          iv_name  = 'auth-token'
+          iv_value = token. "Set your header .
+* POST
+      lo_rest_client->if_rest_resource~post( lo_request ).
+* Collect response
+
+* HTTP response
+      lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
+* HTTP return status
+      http_status = lv_status = lo_response->get_header_field( '~status_code' ).
+      reason = lo_response->get_header_field( '~status_reason' ).
+      content_length = lo_response->get_header_field( 'content-length' ).
+      location = lo_response->get_header_field( 'location' ).
+      content_type = lo_response->get_header_field( 'content-type' ).
+* RAW response
+      response = lo_response->get_string_data( ).
+* JSON to ABAP
+      data lr_json_deserializer type ref to cl_trex_json_deserializer.
+      types: begin of ty_json_res,
+               error   type string,
+               details type string,
+             end of ty_json_res.
+      data: json_res type ty_json_res.
+
+      ev_http_response_status_code = http_status.
+      ev_http_response = response.
+
+    endif.
+  endmethod.
+
+
+  method send_notification.
+
+    data: lob_any            type ref to object,
+          lc_container_t     type ref to if_swj_ppf_container,
+          lc_exit_t          type ref to if_ex_exec_methodcall_ppf,
+          lv_application_log type balloghndl,
+          l_rp_status_t      type ppfdtstat,
+          lv_partner_guid    type bu_partner_guid,
+          lt_recepients      type aicrm_t_bupa,
+          lc_dummy_partner_t type ref to cl_partner_ppf.
+
+    rv_status = 2.
+    lob_any = ca_doc_crm_order_h=>agent->if_os_ca_service~get_ref_by_oid(
+      iv_rfc_guid ).
+    "lcl_doc_crm_order_h ?= lob_any.
+
+*                       create container
+    create object lc_container_t type cl_swj_ppf_container.
+    create object lc_dummy_partner_t.
+*                       create PPF Exit
+    call method cl_exithandler=>get_instance
+      exporting
+        exit_name              = 'EXEC_METHODCALL_PPF'
+        null_instance_accepted = 'X'
+      changing
+        instance               = lc_exit_t.
+
+* get receipents
+    data(lt_suc_docs) = cl_hf_helper=>get_sucdocs_of_chng_doc( im_change_document_id = iv_rfc_guid ).
+    refresh lt_recepients.
+    loop at lt_suc_docs into data(lv_object_guid).
+      call function 'SOCM_CRM_PA_GET_PARTNER'
+        exporting
+          iv_guid_crm     = lv_object_guid
+          iv_partner_fct  = 'SMCD0001'
+        importing
+          ev_partner_guid = lv_partner_guid.
+
+      check lv_partner_guid is not initial. "
+      select single partner from but000 into @data(lv_partner) where partner_guid = @lv_partner_guid.
+      append lv_partner to lt_recepients.
+    endloop.
+
+    sort lt_recepients.
+    delete adjacent duplicates from lt_recepients.
+
+    loop at lt_recepients into data(lv_recepient).
+            lc_container_t->set_value( element_name = 'RECEIVER_BP'
+                                       data = lv_recepient ).
+
+            lc_container_t->set_value( element_name = if_aic_cm_email_service=>con_ppf_container_elements-mail_form_template
+                                               data = 'TOO_CHARM_MAIL_TEMPLATE' ).
+
+            lc_container_t->set_value( element_name = if_aic_cm_email_service=>con_ppf_container_elements-default_sender_email
+                                       data = 'noreply@togg.com.tr' ).
+
+
+            try.
+                call method lc_exit_t->execute
+                  exporting
+                    flt_val            = 'SEND_MAIL_WITH_MAIL_FORMS'
+                    io_appl_object     = lob_any
+                    io_partner         = lc_dummy_partner_t
+                    ip_application_log = lv_application_log
+                    ip_preview         = space
+                    ii_container       = lc_container_t
+                    "ip_action          = 'SET_STATUS_BY_SUCDOC'
+                  receiving
+                    rp_status          = l_rp_status_t.            "no real PPF action
+              catch cx_socm_condition_violated
+                    cx_socm_declared_exception.
+
+            endtry.
+
+      endloop.
+      rv_status = l_rp_status_t.
+
+  endmethod.
+
+
   method SET_IBASE.
 
     data: z_ibase               type ib_ibase,
@@ -915,6 +1143,78 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
   endmethod.
 
 
+  METHOD set_jira_status.
+    DATA:
+      lv_body        TYPE string,
+      lv_uri         TYPE string,
+      lv_stat_c      TYPE char4,
+      lv_response    TYPE string,
+      lv_http_status TYPE string,
+      lv_jira_id     TYPE crmt_po_number_sold.
+
+    SELECT SINGLE process_type FROM crmd_orderadm_h INTO @DATA(lv_p_type)
+      WHERE guid = @iv_guid.
+
+    CALL METHOD zcl_z_jira_charm_integration=>get_jira_id
+      EXPORTING
+        iv_guid    = iv_guid
+      IMPORTING
+        ev_jira_id = lv_jira_id.
+
+    SELECT SINGLE jira_status FROM zjira_mapping INTO @DATA(lv_stat)
+      WHERE process_type = @lv_p_type
+      AND sm_status = @iv_status
+      AND syst = @sy-sysid
+      AND direction = 'O'.
+
+    IF lv_jira_id IS NOT INITIAL.
+      IF lv_stat IS NOT INITIAL.
+
+          lv_stat_c = lv_stat.
+
+          CONCATENATE
+          '{"update":{"comment":[{"add":{"body":"'
+          'Update from'
+          sy-sysid
+          '"}}]},"transition":{"id":'
+           lv_stat_c
+          '}}' INTO lv_body SEPARATED BY space.
+
+          CONCATENATE lv_jira_id '/transitions' INTO lv_uri.
+
+          CALL METHOD ZCL_Z_JIRA_CHARM_INTEGRATION=>post
+            EXPORTING
+              iv_body                      = lv_body
+              iv_uri                       = lv_uri
+            IMPORTING
+              ev_http_response             = lv_response
+              ev_http_response_status_code = lv_http_status.
+
+          IF lv_response CS '{"errorMessages"'.
+            es_error_message-msgty = 'E'.
+            es_error_message-msgid = 'ZJIRA_INT'.
+            es_error_message-msgno = '001'.
+            es_error_message-msgv1 = lv_http_status.
+            REPLACE ALL OCCURRENCES OF '{"errorMessages":["' IN lv_response WITH ''.
+            es_error_message-msgv2 = lv_response.
+            IF lv_response CS 'The likely cause is that somebody has changed the issue recently, please look at the issue'.
+              es_error_message-msgv1 = 'STA'.
+              CONCATENATE 'Status not valid for doc:' lv_jira_id INTO es_error_message-msgv2 SEPARATED BY space.
+            ENDIF.
+          ENDIF.
+      ELSE.
+*        "maintain mapping table zjira_mapping error
+*        es_error_message-msgty = 'E'.
+*        es_error_message-msgid = 'ZJIRA_INT'.
+*        es_error_message-msgno = '000'.
+*        es_error_message-msgv1 = lv_p_type.
+*        es_error_message-msgv2 = iv_status.
+      ENDIF.
+    ENDIF.
+
+  ENDMETHOD.
+
+
   METHOD set_po_ref.
     DATA: lt_input_fields  TYPE  crmt_input_field_tab,
           ls_input_fields  TYPE  crmt_input_field,
@@ -976,7 +1276,268 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
   ENDMETHOD.
 
 
-  method UPDATE_STATUS.
+  METHOD set_status_by_job.
+    DATA:
+      lv_task_guid  TYPE sysuuid_x16,
+      ls_selopt     TYPE rsparams,
+      lt_selopt     TYPE rsparams_tt,
+      lv_job_exists TYPE boolean,
+      ls_balmi      TYPE balmi,
+      lv_dummystr   TYPE string,
+      lv_job_id     TYPE btcjobcnt.
+
+    FIELD-SYMBOLS:
+         <fs_task>       TYPE REF TO cl_td_task.
+
+    CONSTANTS co_job_task_name TYPE char32 VALUE 'ZSET_CR_STATUS_TOBE_APPROVED'.
+* check if there is a job currently running
+    rv_success = abap_true.
+    DATA(lt_task) = cl_td_task_manager=>get_all_open_tasks(
+      iv_task_name = co_job_task_name ).
+    IF lt_task IS NOT INITIAL.
+      DO 5 TIMES.
+        LOOP AT lt_task ASSIGNING <fs_task>.
+          IF <fs_task>->get_status( ) = cl_td_task_manager=>con_task_status_in_progress. "'P'. " in progress
+            lv_job_exists = abap_true.
+            WAIT UP TO 5 SECONDS.
+            CONTINUE.
+          ELSE.
+            lv_job_exists = abap_false.
+
+          ENDIF.
+        ENDLOOP.
+      ENDDO.
+    ENDIF.
+
+    IF lv_job_exists = abap_true.
+      rv_success = abap_false.
+      RETURN.
+      " add log message and exit ?
+    ENDIF.
+
+    TRY.
+        lv_task_guid = cl_system_uuid=>create_uuid_x16_static( ).
+      CATCH cx_uuid_error.
+        " Message: Internal error
+        MESSAGE e298(ags_td) INTO lv_dummystr.
+        ls_balmi = cl_td_assistant=>prepare_app_log( ).
+        "append ls_balmi to ip_application_log.
+        rv_success = abap_false.
+        RETURN.
+    ENDTRY.
+
+    "parameters
+    CLEAR ls_selopt.
+    ls_selopt-selname = 'P_GUID'.
+    ls_selopt-kind    = 'P'.
+    ls_selopt-sign    = 'I'.
+    ls_selopt-option  = 'EQ'.
+    ls_selopt-low     = iv_order_guid.
+    INSERT ls_selopt INTO TABLE lt_selopt.
+
+* Create a new job with JOB_OPEN
+
+    CALL FUNCTION 'JOB_OPEN'
+      EXPORTING
+        jobname          = co_job_task_name
+      IMPORTING
+        jobcount         = lv_job_id
+      EXCEPTIONS
+        cant_create_job  = 1
+        invalid_job_data = 2
+        jobname_missing  = 3
+        OTHERS           = 4.
+    IF sy-subrc <> 0.
+      rv_success = abap_false.
+    ENDIF.
+
+*------------------------------------------------------------------------------
+* Connect one report to the job by SUBMIT
+
+
+    SUBMIT (co_job_task_name) AND RETURN
+                  WITH p_taskid = lv_task_guid
+                  WITH SELECTION-TABLE lt_selopt
+                  USER sy-uname
+                  VIA JOB co_job_task_name
+                  NUMBER lv_job_id.
+
+    IF sy-subrc <> 0.
+      rv_success = abap_false.
+    ENDIF.
+
+*------------------------------------------------------------------------------
+* Close the job definition with JOB_CLOSE to release the job
+
+    " Convert the date and time from "000..." to space, so that JOB_CLOSE
+    " doesn't recognize them as specified
+*****  IF ls_batch-sdlstrtdt IS INITIAL.
+*****    ls_batch-sdlstrtdt = lc_space_dats.
+*****    ls_batch-sdlstrttm = lc_space_tims.
+*****  ENDIF.
+*****  IF ls_batch-laststrtdt IS INITIAL.
+*****    ls_batch-laststrtdt = lc_space_dats.
+*****    ls_batch-laststrttm = lc_space_tims.
+*****  ENDIF.
+    " Note that if you go to the JOB_CLOSE function module, you can find the
+    " detailed parameter documentation there
+    CALL FUNCTION 'JOB_CLOSE'
+      EXPORTING
+        jobcount             = lv_job_id
+        jobname              = co_job_task_name
+        strtimmed            = abap_true
+*       sdlstrtdt            = ls_batch-sdlstrtdt
+*       sdlstrttm            = ls_batch-sdlstrttm
+*       prddays              = ls_batch-prddays
+*       prdhours             = ls_batch-prdhours
+*       prdmins              = ls_batch-prdmins
+*       prdmonths            = ls_batch-prdmonths
+*       prdweeks             = ls_batch-prdweeks
+*       laststrtdt           = ls_batch-laststrtdt
+*       laststrttm           = ls_batch-laststrttm
+      EXCEPTIONS
+        cant_start_immediate = 1
+        invalid_startdate    = 2
+        jobname_missing      = 3
+        job_close_failed     = 4
+        job_nosteps          = 5
+        job_notex            = 6
+        lock_failed          = 7
+        OTHERS               = 8.
+    IF sy-subrc <> 0.
+      rv_success = abap_false.
+    ENDIF.
+  ENDMETHOD.
+
+
+  method SET_STATUS_BY_PPF.
+
+    data: lv_context         type ref to cl_doc_context_crm_order,
+          lo_appl_object     type ref to object,
+          li_container       type ref to if_swj_ppf_container,
+          lo_partner         type ref to cl_partner_ppf,
+          l_protocol_handle  type balloghndl,
+          rp_status          type ppfdtstat,
+          lc_container       type ref to if_swj_ppf_container,
+          lc_exit            type ref to if_ex_exec_methodcall_ppf,
+          lt_objects_to_save type crmt_object_guid_tab,
+          ls_objects_to_save like line of lt_objects_to_save,
+          lv_upd_str         type string.
+
+
+    call function 'CRM_ACTION_CONTEXT_CREATE'
+      exporting
+        iv_header_guid                 = iv_object_guid
+        iv_object_guid                 = iv_object_guid
+      importing
+        ev_context                     = lv_context
+      exceptions
+        no_actionprofile_for_proc_type = 1
+        no_actionprofile_for_item_type = 2
+        order_read_failed              = 3
+        others                         = 4.
+    if sy-subrc <> 0.
+    endif.
+
+    lo_appl_object = lv_context->appl.
+
+    call function 'CRM_ORDER_ENQUEUE'
+      exporting
+        iv_guid  = iv_object_guid
+        iv_local = 'X'
+      exceptions
+        others   = 1.
+    if sy-subrc <> 0.
+
+    endif.
+
+*       get exit instance
+    lc_exit ?= cl_exithandler_manager_ppf=>get_exit_handler(
+       ip_badi_definition_name = 'EXEC_METHODCALL_PPF' ).
+
+*       call HF_SET_STATUS - Status modification
+    create object lc_container
+      type
+      cl_swj_ppf_container.
+    lc_container->set_value( element_name = 'USER_STATUS'
+                             data = iv_estatus ).
+
+    try.
+        call method lc_exit->execute
+          exporting
+            flt_val            = 'HF_SET_STATUS'
+            io_appl_object     = lo_appl_object
+            io_partner         = lo_partner
+            ip_application_log = l_protocol_handle
+            ip_preview         = ' '
+            ii_container       = lc_container
+          receiving
+            rp_status          = rv_exec_status.
+      catch cx_socm_condition_violated.
+    endtry.
+
+*       Publish event
+    call function 'CRM_EVENT_PUBLISH_OW'
+      exporting
+        iv_obj_name = 'STATUS'
+        iv_guid_hi  = iv_object_guid
+        iv_kind_hi  = 'A'
+        iv_event    = 'SAVE'.
+
+      refresh lt_objects_to_save.
+      ls_objects_to_save =  iv_object_guid.
+      append ls_objects_to_save to lt_objects_to_save.
+
+     call function 'CRM_ORDER_SAVE'
+        exporting
+          it_objects_to_save = lt_objects_to_save
+         iv_no_bdoc_send    = 'X'
+       exceptions
+         document_not_saved = 1
+         others             = 2.
 
   endmethod.
+
+
+  METHOD update_status.
+
+    DATA lv_ppf_exec_stat TYPE ppfdtstat.
+
+    IF iv_action_name_check IS NOT INITIAL.
+
+      DATA(order) = NEW cl_ai_crm_cm_com_crm_order_cm(
+         guid = iv_guid
+         log  = NEW cl_ai_crm_cm_com_logger( )
+       ).
+      TRY.
+          order->if_ai_crm_cm_com_crm_order_pro~get_action_by_pattern( iv_action_name_check ).
+          DATA(lv_action_found) = abap_true.
+        CATCH cx_ai_crm_cm_com_not_found.
+          RETURN. " actiok not found - no execution
+      ENDTRY.
+
+    ENDIF.
+
+    CALL METHOD zcl_z_jira_charm_integration=>set_status_by_ppf(
+      EXPORTING
+        iv_object_guid = iv_guid
+        iv_estatus     = iv_estat
+      RECEIVING
+        rv_exec_status = lv_ppf_exec_stat
+                         ).
+
+    IF lv_ppf_exec_stat = 1. " success
+
+      rs_attributes_resp-statusresp = 'S'.
+      rs_attributes_resp-messageresp = 'Status of object succesfully updated'.
+
+    ELSEIF  lv_ppf_exec_stat = 2. " not success
+
+      rs_attributes_resp-statusresp = 'E'.
+      rs_attributes_resp-messageresp = 'Update of the status was not completed with success yet'.
+
+    ENDIF.
+
+
+  ENDMETHOD.
 ENDCLASS.
