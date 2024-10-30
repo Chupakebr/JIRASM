@@ -21,9 +21,11 @@ CLASS ZCL_Z_JIRA_CHARM_DPC_EXT IMPLEMENTATION.
     DATA: lo_msg_container   TYPE REF TO /iwbep/if_message_container,
           lo_msg             TYPE REF TO /iwbep/if_message_container,
           lo_jira_api        TYPE REF TO zcl_z_jira_charm_integration,
+          lv_jira_id         TYPE crmt_po_number_sold,
           ls_attributes_resp TYPE zcl_z_jira_charm_mpc=>ts_zdocuments.
 
     lo_msg_container = me->mo_context->get_message_container( ).
+    lv_jira_id = er_entity-jira_guid.
 
 
     io_data_provider->read_entry_data(
@@ -44,12 +46,11 @@ CLASS ZCL_Z_JIRA_CHARM_DPC_EXT IMPLEMENTATION.
     IF sy-subrc = 0.
       "1. update of existing DOC
       DATA(lv_process_type) = cl_hf_helper=>get_proc_type_of_chng_doc( im_change_document_id = lv_guid ).
-      SELECT SINGLE sm_status, sm_action FROM zjira_mapping INTO ( @DATA(lv_estat), @data(lv_action_check) )
+      SELECT SINGLE sm_status, sm_action FROM zjira_mapping INTO ( @DATA(lv_estat), @DATA(lv_action_check) )
         WHERE syst = @sy-sysid
         AND process_type = @lv_process_type
         AND direction = 'I'
-        AND jdescription = @er_entity-status.
-      "AND j_int_param = 'S'.
+        AND jira_status = @er_entity-status.
       IF lv_estat IS INITIAL.
         " exception - missing cuatomizing
       ENDIF.
@@ -73,6 +74,7 @@ CLASS ZCL_Z_JIRA_CHARM_DPC_EXT IMPLEMENTATION.
       " ZMMJ
       "Prepering reply
       CLEAR er_entity.
+      er_entity-jira_guid = lv_jira_id.
       CONCATENATE 'CR linked with Jira guid ' er_entity-jira_guid ' exists and will be updated.' INTO er_entity-messageresp.
       er_entity-statusresp = 'I'.
 
@@ -84,7 +86,7 @@ CLASS ZCL_Z_JIRA_CHARM_DPC_EXT IMPLEMENTATION.
         lo_msg->add_message_text_only(             "#EC CI_NO_OBJ_INS_C
           EXPORTING
             iv_msg_type               =  'S'
-            iv_msg_text               =   'Success'"ls_attributes_resp-msg_resp
+            iv_msg_text               =  'Success'"ls_attributes_resp-msg_resp
             iv_add_to_response_header = abap_true    " Flag for adding or not the message to the response header
       ).
 
@@ -102,14 +104,19 @@ CLASS ZCL_Z_JIRA_CHARM_DPC_EXT IMPLEMENTATION.
           iv_add_to_response_header = abap_true    " Flag for adding or not the message to the response header
     ).
       ENDIF.
+      er_entity-solmanguidresp = lv_guid.
+      er_entity-messageresp = ls_attributes_resp-messageresp.
+      er_entity-statusresp = ls_attributes_resp-statusresp.
+      "er_entity-solmanidresp = ls_attributes_resp-solmanidresp.
+
     ELSE.
       " 2. Create new Document
       " creaete new
       CASE er_entity-jira_issue_type.
         WHEN 'Incident'. "ZMTM
-          ls_attributes_resp = lo_jira_api->create_dc( is_attributes = er_entity ).
+          ls_attributes_resp = lo_jira_api->create_cd( is_attributes = er_entity iv_process_type = 'ZMTM').
         WHEN 'Story'.    "ZSMJ
-          ls_attributes_resp = lo_jira_api->create_nc( is_attributes = er_entity ).
+          ls_attributes_resp = lo_jira_api->create_cd( is_attributes = er_entity iv_process_type = 'ZSMJ').
         WHEN OTHERS.
       ENDCASE.
 
@@ -133,14 +140,15 @@ CLASS ZCL_Z_JIRA_CHARM_DPC_EXT IMPLEMENTATION.
               iv_add_to_response_header = abap_true    " Flag for adding or not the message to the response header
             ).
       ENDIF.
-    ENDIF. " create - update
-*
-    CLEAR er_entity.
 
-    er_entity-solmanguidresp = ls_attributes_resp-solmanguidresp.
-    er_entity-solmanidresp = ls_attributes_resp-solmanidresp.
-    er_entity-messageresp = ls_attributes_resp-messageresp.
-    er_entity-statusresp = ls_attributes_resp-statusresp.
+*
+      CLEAR er_entity.
+
+      er_entity-solmanguidresp = ls_attributes_resp-solmanguidresp.
+      er_entity-solmanidresp = ls_attributes_resp-solmanidresp.
+      er_entity-messageresp = ls_attributes_resp-messageresp.
+      er_entity-statusresp = ls_attributes_resp-statusresp.
+    ENDIF. " create - update
 
   ENDMETHOD.
 ENDCLASS.
