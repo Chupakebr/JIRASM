@@ -27,6 +27,37 @@ public section.
     exporting
       !EV_HTTP_RESPONSE type STRING
       !EV_HTTP_RESPONSE_STATUS_CODE type STRING .
+  class-methods GET
+    importing
+      !IV_URI type STRING
+    exporting
+      !EV_HTTP_RESPONSE type STRING
+      !EV_HTTP_RESPONSE_STATUS_CODE type STRING .
+  class-methods PUT
+    importing
+      !IV_BODY type STRING
+      !IV_URI type STRING
+    exporting
+      !EV_HTTP_RESPONSE type STRING
+      !EV_HTTP_RESPONSE_STATUS_CODE type STRING .
+  class-methods CHECK_JIRA_TASK
+    importing
+      !IV_GUID type CRMT_OBJECT_GUID
+    exporting
+      !ES_ERROR_MESSAGE type SYMSG
+    returning
+      value(EV_TASK_ID) type CRMT_PO_NUMBER_SOLD .
+  class-methods SET_JIRA_FIELDS
+    importing
+      !IV_GUID type CRMT_OBJECT_GUID
+    exporting
+      !ES_ERROR_MESSAGE type SYMSG .
+  class-methods CREATE_JIRA
+    importing
+      !IV_GUID type CRMT_OBJECT_GUID
+      !IV_STATUS type CRM_J_STATUS
+    exporting
+      !ES_ERROR_MESSAGE type SYMSG .
   class-methods SET_JIRA_STATUS
     importing
       !IV_GUID type CRMT_OBJECT_GUID
@@ -51,7 +82,7 @@ public section.
     importing
       !IV_GUID type CRMT_OBJECT_GUID
       !IV_ESTAT type J_ESTAT
-      !IV_ACTION_NAME_CHECK type PPFDTT
+      !IV_ACTION_NAME_CHECK type ZSOLMAN_ID
     returning
       value(RS_ATTRIBUTES_RESP) type ZJIRA_CHARM_STRU .
   methods CONSTRUCTOR .
@@ -61,9 +92,10 @@ public section.
       !IV_PROCESS_TYPE type CRMT_PROCESS_TYPE_DB
     returning
       value(RS_ATTRIBUTES_RESP) type ZJIRA_CHARM_STRU .
-  methods CREATE_NC
+  methods UPDATE_CD
     importing
       !IS_ATTRIBUTES type ZJIRA_CHARM_STRU
+      !IV_GUID type CRMT_OBJECT_GUID
     returning
       value(RS_ATTRIBUTES_RESP) type ZJIRA_CHARM_STRU .
   methods GET_CONTEXT
@@ -86,6 +118,137 @@ ENDCLASS.
 
 
 CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
+
+
+  method check_jira_task.
+    data:
+      lv_body        type string,
+      lv_uri         type string,
+      lv_stat_c      type char4,
+      lv_response    type string,
+      lv_http_status type string,
+      lv_jira_id     type crmt_po_number_sold,
+      lv_task_id     type crmt_po_number_sold,
+      lv_task_status type string,
+      iv_1o_api      type ref to cl_ags_crm_1o_api,
+      lv_orderadm_h  type crmt_orderadm_h_wrk.
+
+    ev_task_id = ''.
+
+    call method zcl_z_jira_charm_integration=>get_jira_id
+      exporting
+        iv_guid    = iv_guid
+      importing
+        ev_jira_id = lv_jira_id.
+
+    "lv_jira_id = 'JCI-75'.
+
+    if lv_jira_id is not initial.
+      concatenate lv_uri lv_jira_id into lv_uri.
+
+      call method zcl_z_jira_charm_integration=>get
+        exporting
+          iv_uri                       = lv_uri
+        importing
+          ev_http_response             = lv_response
+          ev_http_response_status_code = lv_http_status.
+
+      if lv_response cs '{"errorMessages"'.
+        es_error_message-msgty = 'E'.
+        es_error_message-msgid = 'ZJIRA_INT'.
+        es_error_message-msgno = '001'.
+        es_error_message-msgv1 = lv_http_status.
+        replace all occurrences of '{"errorMessages":["' in lv_response with ''.
+        es_error_message-msgv2 = lv_response.
+        if lv_response cs 'The likely cause is that somebody has changed the issue recently, please look at the issue'.
+          es_error_message-msgv1 = 'STA'.
+          concatenate 'Status not valid for doc:' lv_jira_id into es_error_message-msgv2 separated by space.
+        endif.
+      else.
+
+        " JSON to ABAP
+        data: lo_json_parser type ref to /ui2/cl_json,
+              lv_value       type string.
+        data lr_data type ref to data.
+
+        " Convert JSON to ABAP
+        call method /ui2/cl_json=>deserialize
+          exporting
+            json = lv_response
+          changing
+            data = lr_data.
+
+        field-symbols:
+          <data>          type data,
+          <results>       type any,
+          <structure>     type any,
+          <result_struct> type any,
+          <result_field>  type any,
+
+          <table>         type any table,
+          <field>         type any,
+          <field_value>   type data.
+
+        field-symbols:
+          <lv_field> type any,
+          <ld_data>  type ref to data,
+          <ls_row>   type any.
+
+
+        assign lr_data->* to <structure>.
+        assign component 'FIELDS' of structure <structure> to <result_field>. "data for story
+        if <result_field> is assigned.
+          assign <result_field>->* to <data>.
+          assign component 'SUBTASKS' of structure <data> to <field>. "tasks of a story
+          if <field> is assigned.
+            assign <field>->* to <table>.
+            loop at <table> assigning <result_struct>.
+              clear: lv_task_status, lv_value, lv_task_id.
+              unassign: <field>, <structure>, <result_field>, <data>, <field_value>.
+              assign <result_struct>->* to <structure>.
+              assign component 'KEY' of structure <structure> to <field>. "task id
+              if <field> is assigned.
+                lr_data = <field>.
+                assign lr_data->* to <field_value>.
+                lv_task_id = <field_value>.
+                unassign: <field>, <field_value>.
+              endif.
+              assign component 'FIELDS' of structure <structure> to <result_field>. "data for tasks
+              if <result_field> is assigned.
+                assign <result_field>->* to <data>.
+                assign component 'summary' of structure <data> to <field>. "task name
+                assign component 'STATUS' of structure <data> to <result_field>. "task status
+                if <field> is assigned.
+                  lr_data = <field>.
+                  assign lr_data->* to <field_value>.
+                  lv_value = <field_value>.
+                  if lv_value cs 'Build & UT' and <result_field> is assigned.
+                    unassign: <field>, <structure>, <field_value>.
+                    assign <result_field>->* to <structure>.
+                    if <structure> is assigned.
+                      assign component 'NAME' of structure <structure> to <field>.
+                      if <field> is assigned.
+                        lr_data = <field>.
+                        assign lr_data->* to <field_value>.
+                        lv_task_status = <field_value>.
+                        if lv_task_status ns 'Terminé' and lv_task_status ns 'Done'.
+                          "task is open. check not passed
+                          ev_task_id = lv_task_id.
+                          return.
+                        endif.
+                      endif.
+                    endif.
+                  endif.
+                endif.
+              endif.
+            endloop.
+          endif.
+        endif.
+      endif.
+      unassign: <field>, <field_value>, <structure>, <result_field>, <data>.
+    endif.
+
+  endmethod.
 
 
   method CONSTRUCTOR.
@@ -141,11 +304,19 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
         ENDIF.
 
         IF is_attributes-jrelease IS NOT INITIAL.
-          ls_header-zzfld00000p = is_attributes-jrelease.
+          ls_header-zzfld00000i = is_attributes-jrelease.
         ENDIF.
 
         IF is_attributes-bundle IS NOT INITIAL.
           ls_header-zzfld00000s = is_attributes-bundle.
+        ENDIF.
+
+        IF is_attributes-deliverable_type IS NOT INITIAL.
+          ls_header-zzfld00000m = is_attributes-deliverable_type.
+        ENDIF.
+
+        IF is_attributes-jira_guid IS NOT INITIAL.
+          ls_header-/salm/ext_id = is_attributes-jira_guid.
         ENDIF.
 
         lr_order_header->set_properties( ls_header ).
@@ -194,7 +365,7 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
           ENDIF.
           lr_text->get_properties( IMPORTING es_attributes = ls_text ).
           ls_text-tdobject   = 'CRM_ORDERH'.
-          ls_text-tdid       = 'CD01'.
+          ls_text-tdid       = 'CR01'.
           ls_text-tdspras    = sy-langu.
           ls_text-tdstyle    = 'SYSTEM'.
           ls_text-tdform     = 'SYSTEM'.
@@ -238,15 +409,19 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
         ENDIF.
 
 *        "customer header
-*        DATA(lr_customerh) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderCustExt' ).
-*        IF lr_customerh IS NOT BOUND.
-*          lr_customerh = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderCustExt' ).
-*        ENDIF.
-*        lr_customerh->get_properties( IMPORTING es_attributes = ls_customerh ).
-*
-**        IF is_attributes-project IS NOT INITIAL.
-**          ls_customerh-zzfld00001j = is_attributes-project.
-**        ENDIF.
+        DATA(lr_customerh) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderCustExt' ).
+        IF lr_customerh IS NOT BOUND.
+          lr_customerh = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderCustExt' ).
+        ENDIF.
+        lr_customerh->get_properties( IMPORTING es_attributes = ls_customerh ).
+
+        IF is_attributes-ricefw IS NOT INITIAL.
+          ls_customerh-zzricefw = is_attributes-ricefw.
+        ELSE.
+          ls_customerh-zzricefw = 'N/A'.
+        ENDIF.
+
+        CONCATENATE 'https://iadc-sandbox-328.atlassian.net/https://iadc-sandbox-328.atlassian.net/browse/' is_attributes-jira_guid  INTO ls_customerh-zzurl.
 **
 **        IF is_attributes-jrelease IS NOT INITIAL.
 **          ls_customerh-zzfld00001i = is_attributes-jrelease.
@@ -255,7 +430,7 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
 **        IF is_attributes-bundle IS NOT INITIAL.
 **          ls_customerh-zzfld00000s = is_attributes-bundle.
 **        ENDIF.
-*        lr_customerh->set_properties( ls_customerh ).
+        lr_customerh->set_properties( ls_customerh ).
 **        "Admin header
 **        DATA(lr_adminh) = lr_order_header->get_related_entity( iv_relation_name = 'BTAdminH' ).
 **        IF lr_adminh IS NOT BOUND.
@@ -282,24 +457,24 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
 *          EXPORTING
 *            iv_attr_name      =     'GUID'
 *         ).
-
-        DATA lv_jira_cycle TYPE catsrpatx.
-        lv_jira_cycle = is_attributes-change_cycle.
-
-        CALL METHOD me->get_context
-          EXPORTING
-            iv_cycle_id       = lv_jira_cycle
-            iv_process_type   = ls_header-process_type
-          IMPORTING
-            ev_slan_id        = DATA(lv_slan_id)
-            ev_sbra_id        = DATA(lv_sbra_id)
-            ev_ibase_instance = DATA(lv_ibase_instance)
-            ev_product_id     = DATA(lv_product_id)
-            ev_sid            = DATA(lv_sid)
-            ev_mandt          = DATA(lv_mandt)
-            ev_project        = DATA(lv_project)
-            ev_cycle_id       = DATA(lv_cycle).
-
+*
+*        DATA lv_jira_cycle TYPE catsrpatx.
+*        lv_jira_cycle = is_attributes-change_cycle.
+*
+*        CALL METHOD me->get_context
+*          EXPORTING
+*            iv_cycle_id       = lv_jira_cycle
+*            iv_process_type   = ls_header-process_type
+*          IMPORTING
+*            ev_slan_id        = DATA(lv_slan_id)
+*            ev_sbra_id        = DATA(lv_sbra_id)
+*            ev_ibase_instance = DATA(lv_ibase_instance)
+*            ev_product_id     = DATA(lv_product_id)
+*            ev_sid            = DATA(lv_sid)
+*            ev_mandt          = DATA(lv_mandt)
+*            ev_project        = DATA(lv_project)
+*            ev_cycle_id       = DATA(lv_cycle).
+*
 *        ls_context-solution_id = lv_cycle.
 *        ls_context-created_guid = lv_cr_guid.
 *        ls_context-slan_id = lv_slan_id.
@@ -400,7 +575,7 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
         IF lv_bp_r IS NOT INITIAL.
           lr_partner = lr_partner_set->get_related_entity( iv_relation_name = 'BTPartner_PFT_0008_ABBR_CHMA' ).
           IF lr_partner IS NOT BOUND.
-          lr_partner = lr_partner_set->create_related_entity( iv_relation_name = 'BTPartner_PFT_0008_ABBR_CHMA' ).
+            lr_partner = lr_partner_set->create_related_entity( iv_relation_name = 'BTPartner_PFT_0008_ABBR_CHMA' ).
           ENDIF.
           lr_partner->get_properties( IMPORTING es_attributes = ls_partner ).
           ls_partner-partner_no    = lv_bp_r.
@@ -444,32 +619,17 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
              ).
             DATA lv_guid TYPE crmt_object_guid.
             lv_guid = rs_attributes_resp-solmanguidresp.
-* TSOCM_CR_CONTEXT table
 
-            SELECT SINGLE * FROM tsocm_cr_context INTO @DATA(ls_tsocm_cr_context) WHERE guid = @lv_guid AND process_type = @ls_header-process_type.
-            ls_tsocm_cr_context-guid = lv_guid.
-            ls_tsocm_cr_context-created_guid = lv_guid.
-            ls_tsocm_cr_context-item_guid = lv_guid.
-            ls_tsocm_cr_context-process_type = ls_header-process_type.
-            ls_tsocm_cr_context-ibase = '000000000000000001'.
-            ls_tsocm_cr_context-ibase_instance = lv_ibase_instance.
-            ls_tsocm_cr_context-product_id = lv_product_id.
-            ls_tsocm_cr_context-project_id =  lv_project.
-            ls_tsocm_cr_context-solution_id = lv_cycle.
-            ls_tsocm_cr_context-slan_id = lv_slan_id.
-            ls_tsocm_cr_context-sbra_id = lv_sbra_id.
-            MODIFY  tsocm_cr_context FROM ls_tsocm_cr_context.
-
-            " URL
-            DATA iv_message_guid TYPE	guid_32.
-            iv_message_guid = lv_guid.
-
-            CALL METHOD cl_ai_crm_ui_api=>wd_start_crm_ui_4_display
-              EXPORTING
-                iv_message_guid = iv_message_guid
-              IMPORTING
-                ev_url          = DATA(lv_urls).
-            rs_attributes_resp-solmanurlresp = lv_urls.
+*            " URL
+*            data iv_message_guid type  guid_32.
+*            iv_message_guid = lv_guid.
+*
+*            call method cl_ai_crm_ui_api=>wd_start_crm_ui_4_display
+*              exporting
+*                iv_message_guid = iv_message_guid
+*              importing
+*                ev_url          = data(lv_urls).
+*            rs_attributes_resp-solmanurlresp = lv_urls.
 
             cl_hf_helper=>get_estat_of_change_document(
               EXPORTING
@@ -479,8 +639,9 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
                 ex_stsma          =     DATA(lv_stat_prof)
                 ex_estat          =     DATA(lv_stat)
             ).
-            SELECT txt30 INTO rs_attributes_resp-statusresp FROM tj30t WHERE stsma = lv_stat_prof AND estat = lv_stat AND spras = sy-langu.
-            ENDSELECT.
+            "select txt30 into rs_attributes_resp-statusresp from tj30t where stsma = lv_stat_prof and estat = lv_stat and spras = sy-langu.
+            "endselect.
+            rs_attributes_resp-statusresp = 'S'.
             CONCATENATE 'NC with ID ' rs_attributes_resp-solmanidresp ' successfully created on Solution Manager'
             INTO rs_attributes_resp-messageresp RESPECTING BLANKS.
 
@@ -507,423 +668,6 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
 *        iv_guid   = lv_cr_guid
 *        iv_po_ref = lv_jira_id.
 
-    "add ibase
-    IF lv_product_id IS NOT INITIAL.
-      CALL METHOD me->set_ibase
-        EXPORTING
-          iv_guid  = lv_guid
-          iv_ibase = lv_product_id.
-    ENDIF.
-
-    DATA lt_guid TYPE crmt_object_guid_tab.
-    APPEND lv_guid TO lt_guid .
-    CALL FUNCTION 'CRM_ORDER_SAVE'
-      EXPORTING
-        it_objects_to_save = lt_guid
-      EXCEPTIONS
-        document_not_saved = 1
-        OTHERS             = 2.
-    COMMIT WORK AND WAIT.
-  ENDMETHOD.
-
-
-  METHOD create_nc.
-*    DATA: ls_params          TYPE crmt_name_value_pair,
-*          ls_header          TYPE crmst_adminh_btil,
-*          ls_activity        TYPE crmst_activityh_btil,
-*          ls_status          TYPE crmst_status_btil,
-*          ls_service_request TYPE crmst_srvrequesth_btil,
-*          ls_text            TYPE crmst_text_btil,
-*          ls_subject_single  TYPE crmst_subject_btil,
-*          ls_sales_set       TYPE crmst_salesset_btil,
-*          ls_partner         TYPE crmst_partner_btil,
-*          ls_customerh       TYPE crmst_customerh_btil,
-*          ls_context         TYPE aic_s_cr_context_display,
-*          ls_scope           TYPE tsocm_cr_context_attr_s.
-*
-*    DATA: lt_params             TYPE crmt_name_value_pair_tab,
-*          lt_message_containers TYPE crmt_genil_mess_cont_tab,
-*          lt_messages           TYPE crmt_genil_message_tab.
-*
-*    DATA: lv_partner_guid TYPE bu_partner_guid,
-*          lv_partner      TYPE bu_partner.
-*
-*    TRY.
-*        DATA(lr_crm_bol_core) = cl_crm_bol_core=>get_instance( ).
-*        lr_crm_bol_core->load_component_set( 'BT' ).
-*        CLEAR: ls_params, lt_params.
-** Root Object
-*        ls_params-name  = 'PROCESS_TYPE'.
-*        ls_params-value =  'ZSMJ'.
-*        APPEND ls_params TO lt_params.
-*        DATA(lr_crm_bol_entity_factory) = lr_crm_bol_core->get_entity_factory( iv_entity_name = 'BTOrder' ).
-*        DATA(lr_order)                  = lr_crm_bol_entity_factory->create( lt_params ).
-** Order header
-*        DATA(lr_order_header) = lr_order->get_related_entity( iv_relation_name = 'BTOrderHeader' ).
-*        IF lr_order_header IS NOT BOUND.
-*          lr_order_header = lr_order->create_related_entity( iv_relation_name = 'BTOrderHeader').
-*        ENDIF.
-*        lr_order_header->get_properties( IMPORTING es_attributes = ls_header ).
-*        ls_header-process_type = 'ZSMJ'.
-*        IF strlen( ls_header-description ) > 40.
-*          ls_header-description  = is_attributes-short_descr(40).
-*        ELSE.
-*          ls_header-description  = is_attributes-short_descr.
-*        ENDIF.
-*
-*        IF is_attributes-project IS NOT INITIAL.
-*          ls_header-zzfld00000q = is_attributes-project.
-*        ENDIF.
-*
-*        IF is_attributes-jrelease IS NOT INITIAL.
-*          ls_header-zzfld00000p = is_attributes-jrelease.
-*        ENDIF.
-*
-*        IF is_attributes-bundle IS NOT INITIAL.
-*          ls_header-zzfld00000s = is_attributes-bundle.
-*        ENDIF.
-*
-*        lr_order_header->set_properties( ls_header ).
-******* Order activity (priority - not used. Will be in Incident to Urgetn Change)
-******        data(lr_activity) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderActivityExt' ).
-******        if lr_activity is not bound.
-******          lr_activity = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderActivityExt' ).
-******        endif.
-******        lr_activity->get_properties( importing es_attributes = ls_activity ).
-******        ls_activity-priority = iv_priority.
-******        lr_activity->set_properties( ls_activity ).
-** Status
-*        DATA(lr_status_set) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderStatusSet' ).
-*        IF lr_status_set IS NOT BOUND.
-*          lr_status_set = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderStatusSet' ).
-*        ENDIF.
-*        DATA(lr_status) = lr_status_set->get_related_entity( iv_relation_name = 'BTStatusHAll' ).
-*        IF lr_status IS NOT BOUND.
-*          lr_status = lr_status_set->create_related_entity( iv_relation_name = 'BTStatusHAll' ).
-*        ENDIF.
-*        lr_status->get_properties( IMPORTING es_attributes = ls_status ).
-*        ls_status-status         = 'E0001'.
-*        ls_status-user_stat_proc = 'ZSMJHEAD'.
-*        ls_status-activate       = abap_true.
-*        lr_status->set_properties( ls_status ).
-********* Service request (Impact and urgency) - not used
-********        if iv_impact is not initial or iv_urgency is not initial.
-********          data(lr_service_request) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderSrvRequestExt' ).
-********          if lr_service_request is not bound.
-********            lr_service_request = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderSrvRequestExt' ).
-********          endif.
-********          lr_service_request->get_properties( importing es_attributes = ls_service_request ).
-********          ls_service_request-impact  = iv_impact.
-********          ls_service_request-urgency = iv_urgency.
-********          lr_service_request->set_properties( ls_service_request ).
-********        endif.
-** Texts
-*        IF is_attributes-long_descr IS NOT INITIAL.
-*          DATA(lr_text_set) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderTextSet' ).
-*          IF lr_text_set IS NOT BOUND.
-*            lr_text_set = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderTextSet' ).
-*          ENDIF.
-*          DATA(lr_text) = lr_text_set->get_related_entity( iv_relation_name = 'BTTextHFirst' ).
-*          IF lr_text IS NOT BOUND.
-*            lr_text = lr_text_set->create_related_entity( iv_relation_name = 'BTTextHFirst' ).
-*          ENDIF.
-*          lr_text->get_properties( IMPORTING es_attributes = ls_text ).
-*          ls_text-tdobject   = 'CRM_ORDERH'.
-*          ls_text-tdid       = 'CR01'.
-*          ls_text-tdspras    = sy-langu.
-*          ls_text-tdstyle    = 'SYSTEM'.
-*          ls_text-tdform     = 'SYSTEM'.
-*          ls_text-conc_lines = is_attributes-long_descr.
-*          lr_text->set_properties( ls_text ).
-*        ENDIF.
-*** Subject (Multilevel category)
-**        if is_attributes-categ is not initial. "or is_attributes-categ2,3,4 is not initial.
-**          data(lr_bo_osset) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderBOSSet' ).
-**          if lr_bo_osset is not bound.
-**            lr_bo_osset = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderBOSSet' ).
-**          endif.
-**          data(lr_subject) = lr_bo_osset->get_related_entity( iv_relation_name = 'BTSubjectSet_A' ).
-**          if lr_subject is not bound.
-**            lr_subject = lr_bo_osset->create_related_entity( iv_relation_name = 'BTSubjectSet_A' ).
-**          endif.
-**          data(lr_subject_single) = lr_subject->get_related_entity( iv_relation_name = 'BTSubjectSingle' ).
-**          if lr_subject_single is not bound.
-**            lr_subject_single = lr_subject->create_related_entity( iv_relation_name = 'BTSubjectSingle' ).
-**          endif.
-**          lr_subject_single->get_properties( importing es_attributes = ls_subject_single ).
-***-------------------- CATEGORY - SHALL BE 4 values for every category ?
-**          ls_subject_single-asp_id = '<TOGG CATEGORIZATION>'. " to
-**          "ls_subject_single-cat_id = is_attributes-categ1.
-**          "ls_subject_single-cat_id = is_attributes-categ2.
-**          "ls_subject_single-cat_id = is_attributes-categ3.
-**          "ls_subject_single-cat_id = is_attributes-categ4.
-**
-**          "ls_subject_single-katalog_type = 'D'.
-**          "lr_subject_single->set_properties( ls_subject_single ).
-**        endif.
-** Sales (issue Jira)
-*        IF is_attributes-jira_guid IS NOT INITIAL.
-*          DATA(lr_sales_set) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderSalesSet' ).
-*          IF lr_sales_set IS NOT BOUND.
-*            lr_sales_set = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderSalesSet' ).
-*          ENDIF.
-*          lr_sales_set->get_properties( IMPORTING es_attributes = ls_sales_set ).
-*          ls_sales_set-po_number_sold = is_attributes-jira_guid.
-*          lr_sales_set->set_properties( ls_sales_set ).
-*        ENDIF.
-*
-**        "customer header
-**        DATA(lr_customerh) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderCustExt' ).
-**        IF lr_customerh IS NOT BOUND.
-**          lr_customerh = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderCustExt' ).
-**        ENDIF.
-**        lr_customerh->get_properties( IMPORTING es_attributes = ls_customerh ).
-**
-***        IF is_attributes-project IS NOT INITIAL.
-***          ls_customerh-zzfld00001j = is_attributes-project.
-***        ENDIF.
-***
-***        IF is_attributes-jrelease IS NOT INITIAL.
-***          ls_customerh-zzfld00001i = is_attributes-jrelease.
-***        ENDIF.
-***
-***        IF is_attributes-bundle IS NOT INITIAL.
-***          ls_customerh-zzfld00000s = is_attributes-bundle.
-***        ENDIF.
-**        lr_customerh->set_properties( ls_customerh ).
-***        "Admin header
-***        DATA(lr_adminh) = lr_order_header->get_related_entity( iv_relation_name = 'BTAdminH' ).
-***        IF lr_adminh IS NOT BOUND.
-***          lr_adminh = lr_order_header->create_related_entity( iv_relation_name = 'BTAdminH' ).
-***        ENDIF.
-***        lr_adminh->get_properties( IMPORTING es_attributes = ls_adminh ).
-**
-***        IF is_attributes-project IS NOT INITIAL.
-***          ls_customerh-zzfld00001j = is_attributes-project.
-***        ENDIF.
-*
-** change cycle, and later TSOCM CR table
-*        DATA(lr_cr_context) = lr_order_header->get_related_entity( iv_relation_name = 'BTAICRequestContext' ).
-*        IF lr_cr_context IS NOT BOUND.
-*          lr_cr_context = lr_order_header->create_related_entity( iv_relation_name = 'BTAICRequestContext' ).
-*        ENDIF.
-*        lr_cr_context->get_properties(
-*          IMPORTING
-*            es_attributes = ls_context
-*        ).
-*        DATA lv_cr_guid TYPE crmt_object_guid.
-*        "Data lv_cr_guid ty
-*        lv_cr_guid = lr_order_header->get_property_as_string(
-*          EXPORTING
-*            iv_attr_name      =     'GUID'
-*         ).
-*
-*        DATA lv_jira_cycle TYPE catsrpatx.
-*        lv_jira_cycle = is_attributes-change_cycle.
-*
-*        CALL METHOD me->get_context
-*          EXPORTING
-*            iv_cycle_id       = lv_jira_cycle
-*            iv_process_type   = ls_header-process_type
-*          IMPORTING
-*            ev_slan_id        = DATA(lv_slan_id)
-*            ev_sbra_id        = DATA(lv_sbra_id)
-*            ev_ibase_instance = DATA(lv_ibase_instance)
-*            ev_product_id     = DATA(lv_product_id)
-*            ev_sid            = DATA(lv_sid)
-*            ev_mandt          = DATA(lv_mandt)
-*            ev_project        = DATA(lv_project)
-*            ev_cycle_id       = DATA(lv_cycle).
-*
-**        ls_context-solution_id = lv_cycle.
-**        ls_context-created_guid = lv_cr_guid.
-**        ls_context-slan_id = lv_slan_id.
-**        ls_context-sbra_id = lv_sbra_id.
-**        ls_context-guid = lv_cr_guid.
-**        ls_context-item_guid = lv_cr_guid.
-**        ls_context-process_type = ls_header-process_type.
-**        ls_context-ibase = '000000000000000001'.
-**        ls_context-ibase_instance = lv_ibase_instance.
-**        ls_context-product_id = lv_product_id.
-**        ls_context-sbra_id = ls_context-slan_id.
-**        ls_context-slan_id = ls_context-sbra_id.
-**        lr_cr_context->set_properties( is_attributes = ls_context ).
-**        lr_cr_context->activate_sending(
-***             IV_PROPAGATE_2_DEPENDENT = NO_PROPAGATION
-**            ).
-**        DATA(lr_scope) = lr_order_header->get_related_entity( iv_relation_name = 'BTAICScope' ).
-**        IF lr_scope IS NOT BOUND.
-**          lr_scope = lr_order_header->create_related_entity( iv_relation_name = 'BTAICScope' ).
-**        ENDIF.
-**        lr_scope->get_properties(
-**          IMPORTING
-**            es_attributes = ls_scope
-**        ).
-**        try.
-**            ls_scope-guid = lv_cr_guid.
-**            ls_scope-item_guid = cl_system_uuid=>if_system_uuid_static~create_uuid_c32( ).
-**            ls_scope-process_type = 'ZMMJ'.
-**            ls_scope-ibase = '1'.
-**            ls_scope-ibase_instance = lv_ibase_instance.
-**            ls_scope-product_id = lv_product_id.
-**            ls_scope-created_by = sy-uname.
-**            ls_scope-sid = lv_sid.
-**            ls_scope-mandt = lv_mandt.
-**            lr_scope->set_properties( is_attributes = ls_scope ).
-**            lr_scope->activate_sending(
-***             IV_PROPAGATE_2_DEPENDENT = NO_PROPAGATION
-**            ).
-**          catch cx_uuid_error.
-**        endtry.
-** Partner -> This to be checked, for now maybe not necessary
-*        DATA:
-*          lt_et_search_result  TYPE STANDARD TABLE OF bus020_search_result, "TABLES PARAM
-*          wa_et_search_result  LIKE LINE OF lt_et_search_result,
-*          lt_et_return        TYPE STANDARD TABLE OF bapiret2, "TABLES PARAM
-*          wa_et_return        LIKE LINE OF lt_et_return,
-*          lv_bp_guid          TYPE bu_partner_guid,
-*          lv_mail             TYPE ad_smtpadr.
-*
-*        IF is_attributes-assignee IS NOT INITIAL.
-*          MOVE is_attributes-assignee TO lv_mail.
-*          CALL FUNCTION 'BUPA_SEARCH'
-*            EXPORTING
-*              iv_email         = lv_mail
-*            TABLES
-*              et_search_result = lt_et_search_result
-*              et_return        = lt_et_return.
-*        ENDIF.
-*
-*        LOOP AT lt_et_search_result INTO wa_et_search_result.
-*          lv_bp_guid = wa_et_search_result-partner_guid.
-*        ENDLOOP.
-*
-**        call function 'BP_CENTRALPERSON_GET' exporting iv_username = lv_requester_user_name importing ev_bu_partner_guid = lv_partner_guid exceptions others = 80.
-**        select single partner from but000 into lv_partner where partner_guid = lv_partner_guid.
-**        if sy-subrc <> 0.
-**          ev_has_error = abap_true.
-**          perform add_error using sy-msgid sy-msgty sy-msgno sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4 changing et_errors.
-**        else.
-**          data(lr_partner_set) = lr_order_header->get_related_entity( iv_relation_name = 'BTHeaderPartnerSet' ).
-**          if lr_partner_set is not bound.
-**            lr_partner_set = lr_order_header->create_related_entity( iv_relation_name = 'BTHeaderPartnerSet' ).
-**          endif.
-**          data(lr_partner) = lr_partner_set->get_related_entity( iv_relation_name = 'BTPartner_PFT_0008_MAIN' ).
-**          if lr_partner is not bound.
-**            lr_partner = lr_partner_set->create_related_entity( iv_relation_name = 'BTPartner_PFT_0008_MAIN' ).
-**          endif.
-**          lr_partner->get_properties( importing es_attributes = ls_partner ).
-**          ls_partner-partner_no    = lv_partner.
-**          ls_partner-kind_of_entry = 'C'.
-**          ls_partner-partner_fct   = 'SDCR0001'.
-**          lr_partner->set_properties( ls_partner ).
-**          lr_partner = lr_partner_set->create_related_entity( iv_relation_name = 'BTPartner_PFT_0004_MAIN' ).
-**          lr_partner->get_properties( importing es_attributes = ls_partner ).
-**          ls_partner-partner_no    = lv_partner.
-**          ls_partner-kind_of_entry = 'C'.
-**          ls_partner-partner_fct   = 'SDCD0004'.
-**          lr_partner->set_properties( ls_partner ).
-**        endif.
-*
-**======================Change Cycle
-**----------------------------------
-*
-*
-** Modify object
-*        lr_crm_bol_core->modify( ).
-*        DATA(lr_container_message) = lr_crm_bol_core->get_message_cont_manager( ).
-*        lr_container_message->get_all_message_containers( IMPORTING et_result = lt_message_containers ).
-*        rs_attributes_resp-statusresp = 'S'.
-*
-*        LOOP AT lt_message_containers INTO DATA(lr_message).
-*          lr_message->get_messages( EXPORTING iv_message_type = 'E' IMPORTING et_messages = lt_messages ).
-*          LOOP AT lt_messages INTO DATA(ls_message).
-*            CHECK ls_message-type = 'E'.
-*            rs_attributes_resp-statusresp = 'E'.
-*            " HAS ERROR Attribute: rs_attributes_resp- = abap_true.
-*          ENDLOOP.
-*        ENDLOOP.
-*
-*        "check rs_attributes_resp-HAS ERROR = abap_false.
-**Save and Commit Changes Using Global Transaction Context
-*        DATA(lr_transaction) = lr_crm_bol_core->get_transaction( ).
-*        IF lr_transaction->check_save_needed( ) = abap_true AND lr_transaction->check_save_possible( ) = abap_true.
-*          IF lr_transaction->save( iv_force_save = abap_true ) = abap_true.
-*            DATA(lv_commit_work_succeeded) = lr_transaction->commit( ).
-*            rs_attributes_resp-solmanguidresp = lr_order_header->get_property_as_string(
-*              EXPORTING
-*                iv_attr_name      =     'GUID'
-*             ).
-*            rs_attributes_resp-solmanidresp = lr_order_header->get_property_as_string(
-*              EXPORTING
-*                iv_attr_name      =     'OBJECT_ID'
-*             ).
-*            DATA lv_guid TYPE crmt_object_guid.
-*            lv_guid = rs_attributes_resp-solmanguidresp.
-** TSOCM_CR_CONTEXT table
-*
-*            SELECT SINGLE * FROM tsocm_cr_context INTO @DATA(ls_tsocm_cr_context) WHERE guid = @lv_guid AND process_type = @ls_header-process_type.
-*            ls_tsocm_cr_context-guid = lv_guid.
-*            ls_tsocm_cr_context-created_guid = lv_guid.
-*            ls_tsocm_cr_context-item_guid = lv_guid.
-*            ls_tsocm_cr_context-process_type = ls_header-process_type.
-*            ls_tsocm_cr_context-ibase = '000000000000000001'.
-*            ls_tsocm_cr_context-ibase_instance = lv_ibase_instance.
-*            ls_tsocm_cr_context-product_id = lv_product_id.
-*            ls_tsocm_cr_context-project_id =  lv_project.
-*            ls_tsocm_cr_context-solution_id = lv_cycle.
-*            ls_tsocm_cr_context-slan_id = lv_slan_id.
-*            ls_tsocm_cr_context-sbra_id = lv_sbra_id.
-*            MODIFY  tsocm_cr_context FROM ls_tsocm_cr_context.
-*
-*            " URL
-*            DATA iv_message_guid TYPE  guid_32.
-*            iv_message_guid = lv_guid.
-*
-*            " URL
-*            CALL METHOD cl_ai_crm_ui_api=>wd_start_crm_ui_4_display
-*              EXPORTING
-*                iv_message_guid = iv_message_guid
-*              IMPORTING
-*                ev_url          = DATA(lv_urls).
-*            rs_attributes_resp-solmanurlresp = lv_urls.
-*
-*            cl_hf_helper=>get_estat_of_change_document(
-*              EXPORTING
-**                im_buffer_refresh =     " Data Element for Domain BOOLE: TRUE (="X") and FALSE (=" ")
-*                im_objnr          =     lv_guid
-*              IMPORTING
-*                ex_stsma          =     DATA(lv_stat_prof)
-*                ex_estat          =     DATA(lv_stat)
-*            ).
-*            SELECT txt30 INTO rs_attributes_resp-statusresp FROM tj30t WHERE stsma = lv_stat_prof AND estat = lv_stat AND spras = sy-langu.
-*            ENDSELECT.
-*            CONCATENATE 'NC with ID ' rs_attributes_resp-solmanidresp ' successfully created on Solution Manager'
-*            INTO rs_attributes_resp-messageresp RESPECTING BLANKS.
-*
-*          ELSE.
-*            lr_transaction->rollback( ).
-*            rs_attributes_resp-statusresp = 'E'.
-*          ENDIF.
-*        ENDIF.
-*
-*
-*      CATCH cx_crm_genil_model_error.
-*        " HAS ERROR Attribute: rs_attributes_resp- = abap_true.
-*        " ADD LOGS HERE
-*      CATCH cx_crm_genil_general_error.
-*        " HAS ERROR Attribute: rs_attributes_resp- = abap_true.
-*        " ADD LOGS HERE
-*    ENDTRY.
-*
-**    " add jira id
-**    DATA lv_jira_id TYPE crmt_po_number_sold.
-**    lv_jira_id = is_attributes-jira_guid.
-**    CALL METHOD zcl_z_jira_charm_integration=>set_po_ref
-**      EXPORTING
-**        iv_guid   = lv_cr_guid
-**        iv_po_ref = lv_jira_id.
-*
 *    "add ibase
 *    IF lv_product_id IS NOT INITIAL.
 *      CALL METHOD me->set_ibase
@@ -942,6 +686,150 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
 *        OTHERS             = 2.
 *    COMMIT WORK AND WAIT.
   ENDMETHOD.
+
+
+  method create_jira.
+    data:
+      lv_body        type string,
+      lv_uri         type string,
+      lv_stat_c      type char4,
+      lv_response    type string,
+      lv_http_status type string,
+      lv_jira_id     type crmt_po_number_sold.
+
+    select single process_type from crmd_orderadm_h into @data(lv_p_type)
+      where guid = @iv_guid.
+
+    concatenate
+    '{'
+    "'"fields": {},'
+    '"description": "Test",'
+    '"issuetype": { "id": "10000" },'
+    '"priority": { "id": "20000" },'
+    '"project": { "id": "10000" },'
+    '"summary": "Main order flow broken"'
+    '}'
+     into lv_body separated by space.
+
+    "concatenate lv_jira_id '/transitions' into lv_uri.
+
+    call method zcl_z_jira_charm_integration=>post
+      exporting
+        iv_body                      = lv_body
+        iv_uri                       = lv_uri
+      importing
+        ev_http_response             = lv_response
+        ev_http_response_status_code = lv_http_status.
+
+    if lv_response cs '{"errorMessages"'.
+      es_error_message-msgty = 'E'.
+      es_error_message-msgid = 'ZJIRA_INT'.
+      es_error_message-msgno = '001'.
+      es_error_message-msgv1 = lv_http_status.
+      replace all occurrences of '{"errorMessages":["' in lv_response with ''.
+      es_error_message-msgv2 = lv_response.
+      if lv_response cs 'The likely cause is that somebody has changed the issue recently, please look at the issue'.
+        es_error_message-msgv1 = 'STA'.
+        concatenate 'Status not valid for doc:' lv_jira_id into es_error_message-msgv2 separated by space.
+      endif.
+    endif.
+
+endmethod.
+
+
+  method get.
+
+    data: lo_http_client     type ref to if_http_client,
+          lo_rest_client     type ref to cl_rest_http_client,
+          lv_url             type        string,
+          http_status        type        string,
+          token              type        string,
+          agreements         type        string,
+          lo_response        type ref to if_rest_entity,
+          lv_header_guid     type crmt_object_guid,
+          lv_object_type_ref type swo_objtyp,
+          iv_transactionid   type string,
+          lv_message         type i.
+
+* Create HTTP intance using RFC restination created
+
+    cl_http_client=>create_by_destination(
+     exporting
+       destination              = 'LAYER7'            " Logical destination (specified in function call)
+     importing
+       client                   = lo_http_client    " HTTP Client Abstraction
+     exceptions
+       argument_not_found       = 1
+       destination_not_found    = 2
+       destination_no_authority = 3
+       plugin_not_active        = 4
+       internal_error           = 5
+       others                   = 6
+    ).
+
+
+* Create REST client instance
+    create object lo_rest_client
+      exporting
+        io_http_client = lo_http_client.
+
+* Set HTTP version
+    lo_http_client->request->set_version( if_http_request=>co_protocol_version_1_0 ).
+    if lo_http_client is bound and lo_rest_client is bound.
+
+* Set the URI if any
+      cl_http_utility=>set_request_uri(
+        exporting
+          request = lo_http_client->request    " HTTP Framework (iHTTP) HTTP Request
+          uri     = iv_uri                     " URI String (in the Form of /path?query-string)
+      ).
+
+* HTTP GET
+      lo_rest_client->if_rest_client~get( ).
+
+* HTTP_POST
+
+      data: lo_json        type ref to cl_clb_parse_json,
+            lo_request     type ref to if_rest_entity,
+            lo_sql         type ref to cx_sy_open_sql_db,
+            status         type  string,
+            reason         type  string,
+            response       type  string,
+            content_length type  string,
+            location       type  string,
+            content_type   type  string,
+            lv_status      type  i.
+
+* Set Payload or body ( JSON or XML)
+      lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
+      lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
+*      lo_request->set_string_data( iv_body ).
+
+* Set request header if any
+      call method lo_rest_client->if_rest_client~set_request_header
+        exporting
+          iv_name  = 'auth-token'
+          iv_value = token. "Set your header .
+* Get
+      lo_rest_client->if_rest_resource~get( ).
+* Collect response
+
+* HTTP response
+      lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
+* HTTP return status
+      http_status = lv_status = lo_response->get_header_field( '~status_code' ).
+      reason = lo_response->get_header_field( '~status_reason' ).
+      content_length = lo_response->get_header_field( 'content-length' ).
+      location = lo_response->get_header_field( 'location' ).
+      content_type = lo_response->get_header_field( 'content-type' ).
+* RAW response
+      response = lo_response->get_string_data( ).
+
+      ev_http_response_status_code = http_status.
+      ev_http_response = response.
+
+    endif.
+  endmethod.
 
 
   METHOD get_context.
@@ -991,13 +879,16 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
   ENDMETHOD.
 
 
-  METHOD get_jira_id.
+  method get_jira_id.
 
-    SELECT SINGLE t_s~po_number_sold FROM crmd_link AS t_l LEFT JOIN
-      crmd_sales AS t_s ON t_l~guid_set = t_s~guid INTO @ev_jira_id
-    WHERE t_l~guid_hi = @iv_guid AND po_number_sold IS NOT NULL. "#EC CI_NOFIELD
+    "    SELECT SINGLE t_s~po_number_sold FROM crmd_link AS t_l LEFT JOIN
+    "      crmd_sales AS t_s ON t_l~guid_set = t_s~guid INTO @ev_jira_id
+    "    WHERE t_l~guid_hi = @iv_guid AND po_number_sold IS NOT NULL. "#EC CI_NOFIELD
 
-  ENDMETHOD.
+    select single /salm/ext_id from crmd_orderadm_h into @ev_jira_id
+    where guid = @iv_guid and /salm/ext_id is not null. "#EC CI_NOFIELD
+
+  endmethod.
 
 
   method post.
@@ -1075,6 +966,108 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
           iv_value = token. "Set your header .
 * POST
       lo_rest_client->if_rest_resource~post( lo_request ).
+* Collect response
+
+* HTTP response
+      lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
+* HTTP return status
+      http_status = lv_status = lo_response->get_header_field( '~status_code' ).
+      reason = lo_response->get_header_field( '~status_reason' ).
+      content_length = lo_response->get_header_field( 'content-length' ).
+      location = lo_response->get_header_field( 'location' ).
+      content_type = lo_response->get_header_field( 'content-type' ).
+* RAW response
+      response = lo_response->get_string_data( ).
+* JSON to ABAP
+      data lr_json_deserializer type ref to cl_trex_json_deserializer.
+      types: begin of ty_json_res,
+               error   type string,
+               details type string,
+             end of ty_json_res.
+      data: json_res type ty_json_res.
+
+      ev_http_response_status_code = http_status.
+      ev_http_response = response.
+
+    endif.
+  endmethod.
+
+
+  method PUT.
+
+    data: lo_http_client     type ref to if_http_client,
+          lo_rest_client     type ref to cl_rest_http_client,
+          lv_url             type        string,
+          http_status        type        string,
+          token              type        string,
+          agreements         type        string,
+          lo_response        type ref to if_rest_entity,
+          lv_header_guid     type crmt_object_guid,
+          lv_object_type_ref type swo_objtyp,
+          iv_transactionid   type string,
+          lv_message         type i.
+
+* Create HTTP intance using RFC restination created
+
+    cl_http_client=>create_by_destination(
+     exporting
+       destination              = 'LAYER7'            " Logical destination (specified in function call)
+     importing
+       client                   = lo_http_client    " HTTP Client Abstraction
+     exceptions
+       argument_not_found       = 1
+       destination_not_found    = 2
+       destination_no_authority = 3
+       plugin_not_active        = 4
+       internal_error           = 5
+       others                   = 6
+    ).
+
+
+* Create REST client instance
+    create object lo_rest_client
+      exporting
+        io_http_client = lo_http_client.
+
+* Set HTTP version
+    lo_http_client->request->set_version( if_http_request=>co_protocol_version_1_0 ).
+    if lo_http_client is bound and lo_rest_client is bound.
+
+* Set the URI if any
+      cl_http_utility=>set_request_uri(
+        exporting
+          request = lo_http_client->request    " HTTP Framework (iHTTP) HTTP Request
+          uri     = iv_uri                     " URI String (in the Form of /path?query-string)
+      ).
+
+* HTTP GET
+      lo_rest_client->if_rest_client~get( ).
+
+* HTTP_POST
+
+      data: lo_json        type ref to cl_clb_parse_json,
+            lo_request     type ref to if_rest_entity,
+            lo_sql         type ref to cx_sy_open_sql_db,
+            status         type  string,
+            reason         type  string,
+            response       type  string,
+            content_length type  string,
+            location       type  string,
+            content_type   type  string,
+            lv_status      type  i.
+
+* Set Payload or body ( JSON or XML)
+      lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
+      lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
+      lo_request->set_string_data( iv_body ).
+
+* Set request header if any
+      call method lo_rest_client->if_rest_client~set_request_header
+        exporting
+          iv_name  = 'auth-token'
+          iv_value = token. "Set your header .
+* Put
+      lo_rest_client->if_rest_resource~put( lo_request ).
 * Collect response
 
 * HTTP response
@@ -1254,17 +1247,16 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
   endmethod.
 
 
-  METHOD set_jira_status.
+  METHOD set_jira_fields.
     DATA:
       lv_body        TYPE string,
       lv_uri         TYPE string,
       lv_stat_c      TYPE char4,
       lv_response    TYPE string,
       lv_http_status TYPE string,
-      lv_jira_id     TYPE crmt_po_number_sold.
-
-    SELECT SINGLE process_type FROM crmd_orderadm_h INTO @DATA(lv_p_type)
-      WHERE guid = @iv_guid.
+      lv_jira_id     TYPE crmt_po_number_sold,
+      iv_1o_api      TYPE REF TO cl_ags_crm_1o_api,
+      lv_orderadm_h  TYPE crmt_orderadm_h_wrk.
 
     CALL METHOD zcl_z_jira_charm_integration=>get_jira_id
       EXPORTING
@@ -1272,58 +1264,191 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
       IMPORTING
         ev_jira_id = lv_jira_id.
 
-    SELECT SINGLE jira_status FROM zjira_mapping INTO @DATA(lv_stat)
-      WHERE process_type = @lv_p_type
-      AND sm_status = @iv_status
-      AND syst = @sy-sysid
-      AND direction = 'O'.
-
     IF lv_jira_id IS NOT INITIAL.
-      IF lv_stat IS NOT INITIAL.
 
-          lv_stat_c = lv_stat.
+*      select single process_type, zzfld00000q, zzfld00000i, zzfld00000s
+*      from crmd_orderadm_h
+*      into (  @data(lv_p_type), @data(lv_project), @data(lv_release), @data(lv_bandle) )
+*      where guid = @iv_guid.
 
-          CONCATENATE
-          '{"update":{"comment":[{"add":{"body":"'
-          'Update from'
-          sy-sysid
-          '"}}]},"transition":{"id":'
-           lv_stat_c
-          '}}' INTO lv_body SEPARATED BY space.
+      " get admin header
+      cl_ags_crm_1o_api=>get_instance(
+          EXPORTING
+          iv_header_guid                = iv_guid
+          iv_process_mode               = cl_ags_crm_1o_api=>ac_mode-display  " Processing Mode of Transaction
+        IMPORTING
+          eo_instance                   = iv_1o_api
+        EXCEPTIONS
+          invalid_parameter_combination = 1
+          error_occurred                = 2
+          OTHERS                        = 3 ).
+      IF sy-subrc <> 0.
+      ENDIF.
 
-          CONCATENATE lv_jira_id '/transitions' INTO lv_uri.
+      CALL METHOD iv_1o_api->get_orderadm_h
+        IMPORTING
+          es_orderadm_h = lv_orderadm_h
+*        exceptions
+*         document_not_found   = 1
+*         error_occurred       = 2
+*         document_locked      = 3
+*         no_change_authority  = 4
+*         no_display_authority = 5
+*         no_change_allowed    = 6
+*         others        = 7
+        .
+      IF sy-subrc <> 0.
+*       Implement suitable error handling here
+      ENDIF.
+      "if lv_orderadm_h-zzfld00000q <> lv_project or  lv_orderadm_h-zzfld00000i <> lv_release or lv_orderadm_h-zzfld00000s <> lv_bandle.
+      " As discussed with Alfredo 05.02.25 we will send fields valus on each update of the document, to inforse solman as a single source of trouth, not Jira!
+      " but fields still could be updated on status change? - not discussed
+     CONCATENATE lv_jira_id '' into lv_uri.
 
-          CALL METHOD ZCL_Z_JIRA_CHARM_INTEGRATION=>post
-            EXPORTING
-              iv_body                      = lv_body
-              iv_uri                       = lv_uri
-            IMPORTING
-              ev_http_response             = lv_response
-              ev_http_response_status_code = lv_http_status.
+      "split in to 3 seporate updates, seporate for each field.
+*        concatenate
+*        '{"fields":'
+*        '{"customfield_12086":{"value":"'
+*         lv_orderadm_h-zzfld00000q
+*        '"},'
+*        '"customfield_11225":{"value":"'
+*         lv_orderadm_h-zzfld00000i
+*         '"},'
+*         '"customfield_12098":{"value":"'
+*         lv_orderadm_h-zzfld00000s
+*        '"}}}' into lv_body.
 
-          IF lv_response CS '{"errorMessages"'.
-            es_error_message-msgty = 'E'.
-            es_error_message-msgid = 'ZJIRA_INT'.
-            es_error_message-msgno = '001'.
-            es_error_message-msgv1 = lv_http_status.
-            REPLACE ALL OCCURRENCES OF '{"errorMessages":["' IN lv_response WITH ''.
-            es_error_message-msgv2 = lv_response.
-            IF lv_response CS 'The likely cause is that somebody has changed the issue recently, please look at the issue'.
-              es_error_message-msgv1 = 'STA'.
-              CONCATENATE 'Status not valid for doc:' lv_jira_id INTO es_error_message-msgv2 SEPARATED BY space.
-            ENDIF.
-          ENDIF.
-      ELSE.
+      CONCATENATE
+      '{"fields":'
+      '{"customfield_12086":{"value":"'
+       lv_orderadm_h-zzfld00000q
+      '"}}}' INTO lv_body.
+
+      CALL METHOD zcl_z_jira_charm_integration=>put
+        EXPORTING
+          iv_body                      = lv_body
+          iv_uri                       = lv_uri
+        IMPORTING
+          ev_http_response             = lv_response
+          ev_http_response_status_code = lv_http_status.
+
+      CLEAR lv_body.
+      CONCATENATE
+      '{"fields":'
+      '{"customfield_11225":{"value":"'
+      lv_orderadm_h-zzfld00000i
+      '"}}}' INTO lv_body.
+      CALL METHOD zcl_z_jira_charm_integration=>put
+        EXPORTING
+          iv_body                      = lv_body
+          iv_uri                       = lv_uri
+        IMPORTING
+          ev_http_response             = lv_response
+          ev_http_response_status_code = lv_http_status.
+
+      CLEAR lv_body.
+      CONCATENATE
+      '{"fields":'
+      '{"customfield_12098":{"value":"'
+      lv_orderadm_h-zzfld00000s
+      '"}}}' INTO lv_body.
+
+      CALL METHOD zcl_z_jira_charm_integration=>put
+        EXPORTING
+          iv_body                      = lv_body
+          iv_uri                       = lv_uri
+        IMPORTING
+          ev_http_response             = lv_response
+          ev_http_response_status_code = lv_http_status.
+
+*        if lv_response cs '{"errorMessages"'.
+*          es_error_message-msgty = 'E'.
+*          es_error_message-msgid = 'ZJIRA_INT'.
+*          es_error_message-msgno = '001'.
+*          es_error_message-msgv1 = lv_http_status.
+*          replace all occurrences of '{"errorMessages":["' in lv_response with ''.
+*          es_error_message-msgv2 = lv_response.
+*          if lv_response cs 'The likely cause is that somebody has changed the issue recently, please look at the issue'.
+*            es_error_message-msgv1 = 'STA'.
+*            concatenate 'Status not valid for doc:' lv_jira_id into es_error_message-msgv2 separated by space.
+*          endif.
+*        endif.
+    ENDIF.
+  ENDMETHOD.
+
+
+  method SET_JIRA_STATUS.
+    data:
+      lv_body        type string,
+      lv_uri         type string,
+      lv_stat_c      type char4,
+      lv_response    type string,
+      lv_http_status type string,
+      lv_jira_id     type crmt_po_number_sold.
+
+    select single process_type from crmd_orderadm_h into @data(lv_p_type)
+      where guid = @iv_guid.
+
+    call method zcl_z_jira_charm_integration=>get_jira_id
+      exporting
+        iv_guid    = iv_guid
+      importing
+        ev_jira_id = lv_jira_id.
+
+    select jira_status from zjira_mapping into table @data(lt_stat)
+      where process_type = @lv_p_type
+      and sm_status = @iv_status
+      and syst = @sy-sysid
+      and direction = 'O'.
+
+      if lv_jira_id is not initial.
+        if lt_stat is not initial.
+          loop at lt_stat into data(lv_stat).
+            lv_stat_c = lv_stat.
+
+            concatenate
+            '{"update":{"comment":[{"add":{"body":"'
+            'Update from'
+            sy-sysid
+            '"}}]},"transition":{"id":'
+             lv_stat_c
+            '}}' into lv_body separated by space.
+
+            concatenate lv_jira_id '/transitions' into lv_uri.
+
+            call method zcl_z_jira_charm_integration=>post
+              exporting
+                iv_body                      = lv_body
+                iv_uri                       = lv_uri
+              importing
+                ev_http_response             = lv_response
+                ev_http_response_status_code = lv_http_status.
+
+            if lv_response cs '{"errorMessages"'.
+              es_error_message-msgty = 'E'.
+              es_error_message-msgid = 'ZJIRA_INT'.
+              es_error_message-msgno = '001'.
+              es_error_message-msgv1 = lv_http_status.
+              replace all occurrences of '{"errorMessages":["' in lv_response with ''.
+              es_error_message-msgv2 = lv_response.
+              if lv_response cs 'The likely cause is that somebody has changed the issue recently, please look at the issue'.
+                es_error_message-msgv1 = 'STA'.
+                concatenate 'Status not valid for doc:' lv_jira_id into es_error_message-msgv2 separated by space.
+              endif.
+            endif.
+            WAIT UP TO 5 SECONDS.
+          endloop.
+        else.
 *        "maintain mapping table zjira_mapping error
 *        es_error_message-msgty = 'E'.
 *        es_error_message-msgid = 'ZJIRA_INT'.
 *        es_error_message-msgno = '000'.
 *        es_error_message-msgv1 = lv_p_type.
 *        es_error_message-msgv2 = iv_status.
-      ENDIF.
-    ENDIF.
+        endif.
+      endif.
 
-  ENDMETHOD.
+    endmethod.
 
 
   METHOD set_po_ref.
@@ -1610,45 +1735,186 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
   endmethod.
 
 
+  method update_cd.
+    data:
+      lv_descr  type crmt_process_description,
+      lv_update type boolean.
+
+    lv_update = 0.
+*
+    if strlen( is_attributes-short_descr ) > 40.
+      lv_descr   = is_attributes-short_descr(40).
+    else.
+      lv_descr   = is_attributes-short_descr.
+    endif.
+
+    select single * from crmd_orderadm_h  where guid = @iv_guid into @data(ls_orderadm_h).
+
+    if ls_orderadm_h-description        <> lv_descr
+      or is_attributes-project          <> ls_orderadm_h-zzfld00000q
+      or is_attributes-jrelease         <> ls_orderadm_h-zzfld00000i
+      or is_attributes-bundle           <> ls_orderadm_h-zzfld00000s
+      or is_attributes-deliverable_type <> ls_orderadm_h-zzfld00000m.
+
+      update crmd_orderadm_h set
+      description = @lv_descr,
+      zzfld00000q = @is_attributes-project,
+      zzfld00000i = @is_attributes-jrelease,
+      zzfld00000s = @is_attributes-bundle,
+      zzfld00000m = @is_attributes-deliverable_type
+      where guid = @iv_guid.
+
+      lv_update = 1.
+    endif.
+    select single * from crmd_customer_h  where guid = @iv_guid into @data(ls_customer_h).
+    if ls_customer_h-zzricefw        <> is_attributes-ricefw.
+
+      update crmd_customer_h set
+      zzricefw = @is_attributes-ricefw
+      where guid = @iv_guid.
+      lv_update = 1.
+    endif.
+
+    if lv_update = 1.
+      commit work and wait.
+    endif.
+
+  endmethod.
+
+
   METHOD update_status.
 
     DATA lv_ppf_exec_stat TYPE ppfdtstat.
+    "first check if status is not set yet?
+    DATA lv_skip TYPE boolean.
+    lv_skip = 0.
 
-    IF iv_action_name_check IS NOT INITIAL.
+    CALL METHOD cl_hf_helper=>get_estat_of_change_document
+      EXPORTING
+        im_objnr = iv_guid
+      IMPORTING
+        ex_estat = DATA(ls_status).
 
-      DATA(order) = NEW cl_ai_crm_cm_com_crm_order_cm(
-         guid = iv_guid
-         log  = NEW cl_ai_crm_cm_com_logger( )
-       ).
-      TRY.
-          order->if_ai_crm_cm_com_crm_order_pro~get_action_by_pattern( iv_action_name_check ).
-          DATA(lv_action_found) = abap_true.
-        CATCH cx_ai_crm_cm_com_not_found.
-          RETURN. " actiok not found - no execution
-      ENDTRY.
-
+    IF ls_status = iv_estat OR ls_status = 'E0001'.
+      lv_skip = 1.
     ENDIF.
 
-    CALL METHOD zcl_z_jira_charm_integration=>set_status_by_ppf(
+    "check if document locked?
+    DATA:
+      it_list   TYPE STANDARD TABLE OF seqg3, "TABLES PARAM
+      wa_list   LIKE LINE OF it_list,
+      lv_guid   TYPE crmt_object_guid,
+      lt_guid   TYPE crmt_object_guid_tab,
+      lv_locked TYPE boolean.
+
+    lv_locked = 0.
+
+    CALL FUNCTION 'ENQUEUE_READ' "not working?
       EXPORTING
-        iv_object_guid = iv_guid
-        iv_estatus     = iv_estat
-      RECEIVING
-        rv_exec_status = lv_ppf_exec_stat
-                         ).
+        guname = space         " Leave empty to fetch all users
+        gname  = 'CRMD_ORDERADM_H'
+      TABLES
+        enq    = it_list.
+    LOOP AT it_list ASSIGNING FIELD-SYMBOL(<fs_line>). "WHERE bname EQ sy-uname AND type EQ '202' AND zeit NE sy-uzeit.
+      CASE <fs_line>-gname.
+          "CRM oder Case
+        WHEN 'CRMD_ORDERADM_H'.
+          lv_guid = substring( val = <fs_line>-garg off = 3 len = 32 ).
+          IF lv_guid = iv_guid.
+            lv_locked = 1.
+          ENDIF.
+      ENDCASE.
+    ENDLOOP.
 
-    IF lv_ppf_exec_stat = 1. " success
+    IF lv_skip = 0 AND lv_locked = 0.
 
+      IF iv_action_name_check IS NOT INITIAL.
+
+        IF iv_action_name_check = 'X'. "set status without socm actions
+          CALL FUNCTION 'CRM_STATUS_CHANGE_EXTERN'
+            EXPORTING
+              objnr               = iv_guid
+              user_status         = iv_estat
+            EXCEPTIONS
+              object_not_found    = 1
+              status_inconsistent = 2
+              status_not_allowed  = 3
+              OTHERS              = 4.
+          IF sy-subrc <> 0.
+* Implement suitable error handling here
+          ENDIF.
+          rs_attributes_resp-statusresp = 'S'.
+          rs_attributes_resp-messageresp = 'Status of object succesfully updated'.
+          RETURN. "status set
+        ELSE.
+          DATA lv_action_name_check TYPE ppfdtt.
+          lv_action_name_check = iv_action_name_check.
+          DATA(order) = NEW cl_ai_crm_cm_com_crm_order_cm(
+             guid = iv_guid
+             log  = NEW cl_ai_crm_cm_com_logger( )
+           ).
+          TRY.
+              order->if_ai_crm_cm_com_crm_order_pro~get_action_by_pattern( lv_action_name_check ).
+              DATA(lv_action_found) = abap_true.
+            CATCH cx_ai_crm_cm_com_not_found.
+              rs_attributes_resp-statusresp = 'E'.
+              rs_attributes_resp-messageresp = 'No PPF action to set status'.
+              RETURN. " actiok not found - no execution
+          ENDTRY.
+        ENDIF.
+
+      ENDIF.
+
+      CALL METHOD zcl_z_jira_charm_integration=>set_status_by_ppf(
+        EXPORTING
+          iv_object_guid = iv_guid
+          iv_estatus     = iv_estat
+        RECEIVING
+          rv_exec_status = lv_ppf_exec_stat
+                           ).
+    ENDIF.
+    IF lv_ppf_exec_stat = 1 OR lv_skip = 1. " success
       rs_attributes_resp-statusresp = 'S'.
       rs_attributes_resp-messageresp = 'Status of object succesfully updated'.
+      "check if status reeealy set?
+      DATA: lt_status_wrk TYPE crmt_status_wrkt.
+*   read status table
+      CALL FUNCTION 'CRM_STATUS_READ_OW'
+        EXPORTING
+          iv_guid        = iv_guid
+          iv_only_active = 'X'
+        IMPORTING
+          et_status_wrk  = lt_status_wrk
+        EXCEPTIONS
+          not_found      = 1
+          OTHERS         = 2.
+      IF sy-subrc = 0.
+*     check whether set or not
+        READ TABLE lt_status_wrk WITH KEY
+          status     = iv_estat
+          "active_old = 'X'
+          TRANSPORTING NO FIELDS.
+        IF sy-subrc <> 0.
+          rs_attributes_resp-statusresp = 'E'.
+          rs_attributes_resp-messageresp = 'Update of the status was not completed'.
+        ENDIF.
+      ENDIF.
 
-    ELSEIF  lv_ppf_exec_stat = 2. " not success
+      IF ls_status = 'E0001'.
+        rs_attributes_resp-statusresp = 'E'.
+        rs_attributes_resp-messageresp = 'Solman status is initial.'.
+      ENDIF.
+
+    ELSEIF lv_locked = 1.
+      rs_attributes_resp-statusresp = 'E'.
+      rs_attributes_resp-messageresp = 'Document locked'.
+
+    ELSE. " not success
 
       rs_attributes_resp-statusresp = 'E'.
-      rs_attributes_resp-messageresp = 'Update of the status was not completed with success yet'.
+      rs_attributes_resp-messageresp = 'Update of the status was not completed'.
 
     ENDIF.
-
 
   ENDMETHOD.
 ENDCLASS.

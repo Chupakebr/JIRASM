@@ -36,6 +36,7 @@
      <SPRSL>E</SPRSL>
      <ARBGB>ZJIRA_INT</ARBGB>
      <MSGNR>004</MSGNR>
+     <TEXT>Jira Task &amp;1 not closed.</TEXT>
     </T100>
    </T100>
   </asx:values>

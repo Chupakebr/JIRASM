@@ -427,7 +427,7 @@
        <LINE>001</LINE>
        <COLUMN>004</COLUMN>
        <LENGTH>040</LENGTH>
-       <VISLENGTH>040</VISLENGTH>
+       <VISLENGTH>060</VISLENGTH>
        <HEIGHT>001</HEIGHT>
        <FORMAT>CHAR</FORMAT>
        <FROM_DICT>X</FROM_DICT>
@@ -459,7 +459,7 @@
        <LINE>001</LINE>
        <COLUMN>006</COLUMN>
        <LENGTH>040</LENGTH>
-       <VISLENGTH>030</VISLENGTH>
+       <VISLENGTH>060</VISLENGTH>
        <HEIGHT>001</HEIGHT>
        <FORMAT>CHAR</FORMAT>
        <FROM_DICT>X</FROM_DICT>
@@ -544,15 +544,17 @@
        <CONT_NAME>TCTRL_ZJIRA_MAPPING</CONT_NAME>
        <TYPE>TEMPLATE</TYPE>
        <NAME>ZJIRA_MAPPING-JIRA_STATUS</NAME>
+       <TEXT>____________________________________________________________</TEXT>
        <ROLLING>X</ROLLING>
        <LINE>001</LINE>
        <COLUMN>004</COLUMN>
        <LENGTH>060</LENGTH>
-       <VISLENGTH>010</VISLENGTH>
+       <VISLENGTH>007</VISLENGTH>
        <HEIGHT>001</HEIGHT>
        <GROUP1>KEY</GROUP1>
        <FORMAT>CHAR</FORMAT>
        <FROM_DICT>X</FROM_DICT>
+       <MODIFIC>X</MODIFIC>
        <UP_LOWER>X</UP_LOWER>
        <OUTPUT_FLD>X</OUTPUT_FLD>
        <REQU_ENTRY>N</REQU_ENTRY>
@@ -580,15 +582,16 @@
        <CONT_NAME>TCTRL_ZJIRA_MAPPING</CONT_NAME>
        <TYPE>TEMPLATE</TYPE>
        <NAME>ZJIRA_MAPPING-SM_ACTION</NAME>
-       <TEXT>______________________________</TEXT>
+       <TEXT>____________________________________________________________</TEXT>
        <LINE>001</LINE>
        <COLUMN>006</COLUMN>
-       <LENGTH>030</LENGTH>
-       <VISLENGTH>030</VISLENGTH>
+       <LENGTH>060</LENGTH>
+       <VISLENGTH>060</VISLENGTH>
        <HEIGHT>001</HEIGHT>
        <FORMAT>CHAR</FORMAT>
        <FROM_DICT>X</FROM_DICT>
        <MODIFIC>X</MODIFIC>
+       <UP_LOWER>X</UP_LOWER>
        <INPUT_FLD>X</INPUT_FLD>
        <OUTPUT_FLD>X</OUTPUT_FLD>
       </RPY_DYFATC>
