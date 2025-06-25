@@ -206,12 +206,54 @@ method get_p_zzurl.
 endmethod.
 
 
-  method GET_ZZURL.
+  METHOD get_zzurl.
 
     DATA: current TYPE REF TO if_bol_bo_property_access.
     DATA: dref    TYPE REF TO data.
 
-    value = 'Click here to access Jira ticket'.
+    DATA lv_guid       TYPE crmt_object_guid.
+
+    DATA lr_entity     TYPE REF TO cl_crm_bol_entity.
+    DATA lv_url        TYPE string.
+    DATA ls_customer   TYPE crmt_customer_h_wrk.
+
+
+    "CHECK iv_display_mode = abap_false.
+    current = collection_wrapper->get_current( ).
+
+    TRY.
+
+        DATA: coll   TYPE REF TO if_bol_entity_col.
+        DATA: entity TYPE REF TO cl_crm_bol_entity.
+
+        entity ?= current.
+
+        CHECK entity IS BOUND.
+****      select single value from dnoc_usercfg into lv_url "#EC CI_NOFIRST
+****           where field = 'YARA_SNOW_URL'.
+        entity->get_property_as_value(
+          EXPORTING
+            iv_attr_name =     'GUID'
+          IMPORTING
+            ev_result    = lv_guid
+        ).
+        "lv_url = ls_customer-zzurl.
+
+      CATCH cx_root.
+    ENDTRY.
+    IF lv_guid IS NOT INITIAL.
+
+      SELECT SINGLE z~sm_action FROM zjira_mapping AS z LEFT JOIN crmd_orderadm_h AS h
+        ON z~process_type = 'USER' AND h~created_by = z~sm_action
+        WHERE h~guid = @lv_guid INTO @DATA(lv_auto).
+      IF lv_auto IS NOT INITIAL .
+        value = 'Click here to access Jira ticket'.
+      ELSE.
+        value = ''.
+      ENDIF.
+    ELSE.
+      value = ''.
+    ENDIF.
 *******
 *******
 *******    value =
@@ -266,7 +308,7 @@ endmethod.
 *******    ENDTRY.
 
 
-  endmethod.
+  ENDMETHOD.
 
 
   method SET_ZZURL.

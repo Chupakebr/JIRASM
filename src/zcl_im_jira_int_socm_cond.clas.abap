@@ -57,7 +57,10 @@ CLASS ZCL_IM_JIRA_INT_SOCM_COND IMPLEMENTATION.
             AND stat LIKE 'E%'
             INTO @DATA(lv_stst_db).
 
-          IF lv_stst_db <> ls_status and lv_stst_db <> 'E0001'. "status changed and privies status was not initial.
+          IF lv_stst_db <> ls_status "status changed
+            AND lv_stst_db <> 'E0001' "privies status was not initial, first update we are not integrated
+            AND ls_status <> 'E0010'  "if we are canceling CD, update will be done in ORDER_SAVE BADI.
+            .
 
             "process status change on Jira side
             TRY.

@@ -737,99 +737,114 @@ CLASS ZCL_Z_JIRA_CHARM_INTEGRATION IMPLEMENTATION.
 endmethod.
 
 
-  method get.
+  METHOD get.
 
-    data: lo_http_client     type ref to if_http_client,
-          lo_rest_client     type ref to cl_rest_http_client,
-          lv_url             type        string,
-          http_status        type        string,
-          token              type        string,
-          agreements         type        string,
-          lo_response        type ref to if_rest_entity,
-          lv_header_guid     type crmt_object_guid,
-          lv_object_type_ref type swo_objtyp,
-          iv_transactionid   type string,
-          lv_message         type i.
+    DATA: lo_http_client     TYPE REF TO if_http_client,
+          lo_rest_client     TYPE REF TO cl_rest_http_client,
+          lv_url             TYPE        string,
+          http_status        TYPE        string,
+          token              TYPE        string,
+          agreements         TYPE        string,
+          lo_response        TYPE REF TO if_rest_entity,
+          lv_header_guid     TYPE crmt_object_guid,
+          lv_object_type_ref TYPE swo_objtyp,
+          iv_transactionid   TYPE string,
+          lv_message         TYPE i.
 
 * Create HTTP intance using RFC restination created
 
     cl_http_client=>create_by_destination(
-     exporting
+     EXPORTING
        destination              = 'LAYER7'            " Logical destination (specified in function call)
-     importing
+     IMPORTING
        client                   = lo_http_client    " HTTP Client Abstraction
-     exceptions
+     EXCEPTIONS
        argument_not_found       = 1
        destination_not_found    = 2
        destination_no_authority = 3
        plugin_not_active        = 4
        internal_error           = 5
-       others                   = 6
+       OTHERS                   = 6
     ).
+    IF sy-subrc <> 0.
+      ev_http_response_status_code = '500'.
+      ev_http_response = 'Server Error'.
+      RETURN.
+    ENDIF.
 
 
 * Create REST client instance
-    create object lo_rest_client
-      exporting
+    CREATE OBJECT lo_rest_client
+      EXPORTING
         io_http_client = lo_http_client.
 
 * Set HTTP version
     lo_http_client->request->set_version( if_http_request=>co_protocol_version_1_0 ).
-    if lo_http_client is bound and lo_rest_client is bound.
-
+    IF lo_http_client IS BOUND AND lo_rest_client IS BOUND.
+      TRY.
 * Set the URI if any
-      cl_http_utility=>set_request_uri(
-        exporting
-          request = lo_http_client->request    " HTTP Framework (iHTTP) HTTP Request
-          uri     = iv_uri                     " URI String (in the Form of /path?query-string)
-      ).
+          cl_http_utility=>set_request_uri(
+            EXPORTING
+              request = lo_http_client->request    " HTTP Framework (iHTTP) HTTP Request
+              uri     = iv_uri                     " URI String (in the Form of /path?query-string)
+          ).
 
 * HTTP GET
-      lo_rest_client->if_rest_client~get( ).
+          lo_rest_client->if_rest_client~get( ).
 
 * HTTP_POST
 
-      data: lo_json        type ref to cl_clb_parse_json,
-            lo_request     type ref to if_rest_entity,
-            lo_sql         type ref to cx_sy_open_sql_db,
-            status         type  string,
-            reason         type  string,
-            response       type  string,
-            content_length type  string,
-            location       type  string,
-            content_type   type  string,
-            lv_status      type  i.
+          DATA: lo_json        TYPE REF TO cl_clb_parse_json,
+                lo_request     TYPE REF TO if_rest_entity,
+                lo_sql         TYPE REF TO cx_sy_open_sql_db,
+                status         TYPE  string,
+                reason         TYPE  string,
+                response       TYPE  string,
+                content_length TYPE  string,
+                location       TYPE  string,
+                content_type   TYPE  string,
+                lv_status      TYPE  i.
 
 * Set Payload or body ( JSON or XML)
-      lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
-      lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
+          lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
+          lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
 *      lo_request->set_string_data( iv_body ).
 
 * Set request header if any
-      call method lo_rest_client->if_rest_client~set_request_header
-        exporting
-          iv_name  = 'auth-token'
-          iv_value = token. "Set your header .
+          CALL METHOD lo_rest_client->if_rest_client~set_request_header
+            EXPORTING
+              iv_name  = 'auth-token'
+              iv_value = token. "Set your header .
 * Get
-      lo_rest_client->if_rest_resource~get( ).
+          lo_rest_client->if_rest_resource~get( ).
 * Collect response
 
 * HTTP response
-      lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
+          lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
 * HTTP return status
-      http_status = lv_status = lo_response->get_header_field( '~status_code' ).
-      reason = lo_response->get_header_field( '~status_reason' ).
-      content_length = lo_response->get_header_field( 'content-length' ).
-      location = lo_response->get_header_field( 'location' ).
-      content_type = lo_response->get_header_field( 'content-type' ).
+          http_status = lv_status = lo_response->get_header_field( '~status_code' ).
+          reason = lo_response->get_header_field( '~status_reason' ).
+          content_length = lo_response->get_header_field( 'content-length' ).
+          location = lo_response->get_header_field( 'location' ).
+          content_type = lo_response->get_header_field( 'content-type' ).
 * RAW response
-      response = lo_response->get_string_data( ).
+          response = lo_response->get_string_data( ).
 
-      ev_http_response_status_code = http_status.
-      ev_http_response = response.
+          ev_http_response_status_code = http_status.
+          ev_http_response = response.
 
-    endif.
-  endmethod.
+        CATCH cx_rest_client_exception INTO DATA(lo_rest_error).
+          ev_http_response_status_code = '500'.
+          ev_http_response = 'REST Client Exception.'.
+          RETURN.
+        CATCH cx_root INTO DATA(lo_general_error).
+          ev_http_response_status_code = '500'.
+          ev_http_response = 'General Error.'.
+          RETURN.
+      ENDTRY.
+
+    ENDIF.
+  ENDMETHOD.
 
 
   METHOD get_context.
@@ -891,208 +906,236 @@ endmethod.
   endmethod.
 
 
-  method post.
+  METHOD post.
 
-    data: lo_http_client     type ref to if_http_client,
-          lo_rest_client     type ref to cl_rest_http_client,
-          lv_url             type        string,
-          http_status        type        string,
-          token              type        string,
-          agreements         type        string,
-          lo_response        type ref to if_rest_entity,
-          lv_header_guid     type crmt_object_guid,
-          lv_object_type_ref type swo_objtyp,
-          iv_transactionid   type string,
-          lv_message         type i.
+    DATA: lo_http_client     TYPE REF TO if_http_client,
+          lo_rest_client     TYPE REF TO cl_rest_http_client,
+          lv_url             TYPE        string,
+          http_status        TYPE        string,
+          token              TYPE        string,
+          agreements         TYPE        string,
+          lo_response        TYPE REF TO if_rest_entity,
+          lv_header_guid     TYPE crmt_object_guid,
+          lv_object_type_ref TYPE swo_objtyp,
+          iv_transactionid   TYPE string,
+          lv_message         TYPE i.
 
 * Create HTTP intance using RFC restination created
 
     cl_http_client=>create_by_destination(
-     exporting
+     EXPORTING
        destination              = 'LAYER7'            " Logical destination (specified in function call)
-     importing
+     IMPORTING
        client                   = lo_http_client    " HTTP Client Abstraction
-     exceptions
+     EXCEPTIONS
        argument_not_found       = 1
        destination_not_found    = 2
        destination_no_authority = 3
        plugin_not_active        = 4
        internal_error           = 5
-       others                   = 6
+       OTHERS                   = 6
     ).
+    IF sy-subrc <> 0.
+      ev_http_response_status_code = '500'.
+      ev_http_response = 'Server Error'.
+      RETURN.
+    ENDIF.
 
 
 * Create REST client instance
-    create object lo_rest_client
-      exporting
+    CREATE OBJECT lo_rest_client
+      EXPORTING
         io_http_client = lo_http_client.
 
 * Set HTTP version
     lo_http_client->request->set_version( if_http_request=>co_protocol_version_1_0 ).
-    if lo_http_client is bound and lo_rest_client is bound.
-
+    IF lo_http_client IS BOUND AND lo_rest_client IS BOUND.
+      TRY.
 * Set the URI if any
-      cl_http_utility=>set_request_uri(
-        exporting
-          request = lo_http_client->request    " HTTP Framework (iHTTP) HTTP Request
-          uri     = iv_uri                     " URI String (in the Form of /path?query-string)
-      ).
+          cl_http_utility=>set_request_uri(
+            EXPORTING
+              request = lo_http_client->request    " HTTP Framework (iHTTP) HTTP Request
+              uri     = iv_uri                     " URI String (in the Form of /path?query-string)
+          ).
 
 * HTTP GET
-      lo_rest_client->if_rest_client~get( ).
+          lo_rest_client->if_rest_client~get( ).
 
 * HTTP_POST
 
-      data: lo_json        type ref to cl_clb_parse_json,
-            lo_request     type ref to if_rest_entity,
-            lo_sql         type ref to cx_sy_open_sql_db,
-            status         type  string,
-            reason         type  string,
-            response       type  string,
-            content_length type  string,
-            location       type  string,
-            content_type   type  string,
-            lv_status      type  i.
+          DATA: lo_json        TYPE REF TO cl_clb_parse_json,
+                lo_request     TYPE REF TO if_rest_entity,
+                lo_sql         TYPE REF TO cx_sy_open_sql_db,
+                status         TYPE  string,
+                reason         TYPE  string,
+                response       TYPE  string,
+                content_length TYPE  string,
+                location       TYPE  string,
+                content_type   TYPE  string,
+                lv_status      TYPE  i.
 
 * Set Payload or body ( JSON or XML)
-      lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
-      lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
-      lo_request->set_string_data( iv_body ).
+          lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
+          lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
+          lo_request->set_string_data( iv_body ).
 
 * Set request header if any
-      call method lo_rest_client->if_rest_client~set_request_header
-        exporting
-          iv_name  = 'auth-token'
-          iv_value = token. "Set your header .
+          CALL METHOD lo_rest_client->if_rest_client~set_request_header
+            EXPORTING
+              iv_name  = 'auth-token'
+              iv_value = token. "Set your header .
 * POST
-      lo_rest_client->if_rest_resource~post( lo_request ).
+          lo_rest_client->if_rest_resource~post( lo_request ).
 * Collect response
 
 * HTTP response
-      lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
+          lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
 * HTTP return status
-      http_status = lv_status = lo_response->get_header_field( '~status_code' ).
-      reason = lo_response->get_header_field( '~status_reason' ).
-      content_length = lo_response->get_header_field( 'content-length' ).
-      location = lo_response->get_header_field( 'location' ).
-      content_type = lo_response->get_header_field( 'content-type' ).
+          http_status = lv_status = lo_response->get_header_field( '~status_code' ).
+          reason = lo_response->get_header_field( '~status_reason' ).
+          content_length = lo_response->get_header_field( 'content-length' ).
+          location = lo_response->get_header_field( 'location' ).
+          content_type = lo_response->get_header_field( 'content-type' ).
 * RAW response
-      response = lo_response->get_string_data( ).
+          response = lo_response->get_string_data( ).
+        CATCH cx_rest_client_exception INTO DATA(lo_rest_error).
+          ev_http_response_status_code = '500'.
+          ev_http_response = 'REST Client Exception.'.
+          RETURN.
+        CATCH cx_root INTO DATA(lo_general_error).
+          ev_http_response_status_code = '500'.
+          ev_http_response = 'General Error.'.
+          RETURN.
+      ENDTRY.
 * JSON to ABAP
-      data lr_json_deserializer type ref to cl_trex_json_deserializer.
-      types: begin of ty_json_res,
-               error   type string,
-               details type string,
-             end of ty_json_res.
-      data: json_res type ty_json_res.
+      DATA lr_json_deserializer TYPE REF TO cl_trex_json_deserializer.
+      TYPES: BEGIN OF ty_json_res,
+               error   TYPE string,
+               details TYPE string,
+             END OF ty_json_res.
+      DATA: json_res TYPE ty_json_res.
 
       ev_http_response_status_code = http_status.
       ev_http_response = response.
 
-    endif.
-  endmethod.
+    ENDIF.
+  ENDMETHOD.
 
 
-  method PUT.
+  METHOD put.
 
-    data: lo_http_client     type ref to if_http_client,
-          lo_rest_client     type ref to cl_rest_http_client,
-          lv_url             type        string,
-          http_status        type        string,
-          token              type        string,
-          agreements         type        string,
-          lo_response        type ref to if_rest_entity,
-          lv_header_guid     type crmt_object_guid,
-          lv_object_type_ref type swo_objtyp,
-          iv_transactionid   type string,
-          lv_message         type i.
+    DATA: lo_http_client     TYPE REF TO if_http_client,
+          lo_rest_client     TYPE REF TO cl_rest_http_client,
+          lv_url             TYPE        string,
+          http_status        TYPE        string,
+          token              TYPE        string,
+          agreements         TYPE        string,
+          lo_response        TYPE REF TO if_rest_entity,
+          lv_header_guid     TYPE crmt_object_guid,
+          lv_object_type_ref TYPE swo_objtyp,
+          iv_transactionid   TYPE string,
+          lv_message         TYPE i.
 
 * Create HTTP intance using RFC restination created
-
     cl_http_client=>create_by_destination(
-     exporting
+     EXPORTING
        destination              = 'LAYER7'            " Logical destination (specified in function call)
-     importing
+     IMPORTING
        client                   = lo_http_client    " HTTP Client Abstraction
-     exceptions
+     EXCEPTIONS
        argument_not_found       = 1
        destination_not_found    = 2
        destination_no_authority = 3
        plugin_not_active        = 4
        internal_error           = 5
-       others                   = 6
+       OTHERS                   = 6
     ).
+    IF sy-subrc <> 0.
+      ev_http_response_status_code = '500'.
+      ev_http_response = 'Server Error'.
+      RETURN.
+    ENDIF.
 
 
 * Create REST client instance
-    create object lo_rest_client
-      exporting
+    CREATE OBJECT lo_rest_client
+      EXPORTING
         io_http_client = lo_http_client.
 
 * Set HTTP version
     lo_http_client->request->set_version( if_http_request=>co_protocol_version_1_0 ).
-    if lo_http_client is bound and lo_rest_client is bound.
-
+    IF lo_http_client IS BOUND AND lo_rest_client IS BOUND.
+      TRY.
 * Set the URI if any
-      cl_http_utility=>set_request_uri(
-        exporting
-          request = lo_http_client->request    " HTTP Framework (iHTTP) HTTP Request
-          uri     = iv_uri                     " URI String (in the Form of /path?query-string)
-      ).
+          cl_http_utility=>set_request_uri(
+            EXPORTING
+              request = lo_http_client->request    " HTTP Framework (iHTTP) HTTP Request
+              uri     = iv_uri                     " URI String (in the Form of /path?query-string)
+          ).
 
 * HTTP GET
-      lo_rest_client->if_rest_client~get( ).
+          lo_rest_client->if_rest_client~get( ).
 
 * HTTP_POST
 
-      data: lo_json        type ref to cl_clb_parse_json,
-            lo_request     type ref to if_rest_entity,
-            lo_sql         type ref to cx_sy_open_sql_db,
-            status         type  string,
-            reason         type  string,
-            response       type  string,
-            content_length type  string,
-            location       type  string,
-            content_type   type  string,
-            lv_status      type  i.
+          DATA: lo_json        TYPE REF TO cl_clb_parse_json,
+                lo_request     TYPE REF TO if_rest_entity,
+                lo_sql         TYPE REF TO cx_sy_open_sql_db,
+                status         TYPE  string,
+                reason         TYPE  string,
+                response       TYPE  string,
+                content_length TYPE  string,
+                location       TYPE  string,
+                content_type   TYPE  string,
+                lv_status      TYPE  i.
 
 * Set Payload or body ( JSON or XML)
-      lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
-      lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
-      lo_request->set_string_data( iv_body ).
+          lo_request = lo_rest_client->if_rest_client~create_request_entity( ).
+          lo_request->set_content_type( iv_media_type = if_rest_media_type=>gc_appl_json ).
+          lo_request->set_string_data( iv_body ).
 
 * Set request header if any
-      call method lo_rest_client->if_rest_client~set_request_header
-        exporting
-          iv_name  = 'auth-token'
-          iv_value = token. "Set your header .
+          CALL METHOD lo_rest_client->if_rest_client~set_request_header
+            EXPORTING
+              iv_name  = 'auth-token'
+              iv_value = token. "Set your header .
 * Put
-      lo_rest_client->if_rest_resource~put( lo_request ).
+          lo_rest_client->if_rest_resource~put( lo_request ).
 * Collect response
 
 * HTTP response
-      lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
+          lo_response = lo_rest_client->if_rest_client~get_response_entity( ).
 * HTTP return status
-      http_status = lv_status = lo_response->get_header_field( '~status_code' ).
-      reason = lo_response->get_header_field( '~status_reason' ).
-      content_length = lo_response->get_header_field( 'content-length' ).
-      location = lo_response->get_header_field( 'location' ).
-      content_type = lo_response->get_header_field( 'content-type' ).
+          http_status = lv_status = lo_response->get_header_field( '~status_code' ).
+          reason = lo_response->get_header_field( '~status_reason' ).
+          content_length = lo_response->get_header_field( 'content-length' ).
+          location = lo_response->get_header_field( 'location' ).
+          content_type = lo_response->get_header_field( 'content-type' ).
 * RAW response
-      response = lo_response->get_string_data( ).
+          response = lo_response->get_string_data( ).
+
+        CATCH cx_rest_client_exception INTO DATA(lo_rest_error).
+          ev_http_response_status_code = '500'.
+          ev_http_response = 'REST Client Exception.'.
+          RETURN.
+        CATCH cx_root INTO DATA(lo_general_error).
+          ev_http_response_status_code = '500'.
+          ev_http_response = 'General Error.'.
+          RETURN.
+      ENDTRY.
 * JSON to ABAP
-      data lr_json_deserializer type ref to cl_trex_json_deserializer.
-      types: begin of ty_json_res,
-               error   type string,
-               details type string,
-             end of ty_json_res.
-      data: json_res type ty_json_res.
+      DATA lr_json_deserializer TYPE REF TO cl_trex_json_deserializer.
+      TYPES: BEGIN OF ty_json_res,
+               error   TYPE string,
+               details TYPE string,
+             END OF ty_json_res.
+      DATA: json_res TYPE ty_json_res.
 
       ev_http_response_status_code = http_status.
       ev_http_response = response.
 
-    endif.
-  endmethod.
+    ENDIF.
+  ENDMETHOD.
 
 
   method send_notification.
@@ -1305,7 +1348,7 @@ endmethod.
       " but fields still could be updated on status change? - not discussed
      CONCATENATE lv_jira_id '' into lv_uri.
 
-      "split in to 3 seporate updates, seporate for each field.
+      "split into 3 separate updates, separate for each field.
 *        concatenate
 *        '{"fields":'
 *        '{"customfield_12086":{"value":"'
@@ -1377,78 +1420,82 @@ endmethod.
   ENDMETHOD.
 
 
-  method SET_JIRA_STATUS.
-    data:
-      lv_body        type string,
-      lv_uri         type string,
-      lv_stat_c      type char4,
-      lv_response    type string,
-      lv_http_status type string,
-      lv_jira_id     type crmt_po_number_sold.
+  METHOD set_jira_status.
+    DATA:
+      lv_body        TYPE string,
+      lv_uri         TYPE string,
+      lv_stat_c      TYPE char4,
+      lv_response    TYPE string,
+      lv_http_status TYPE string,
+      lv_iter        TYPE int2,
+      lv_jira_id     TYPE crmt_po_number_sold.
 
-    select single process_type from crmd_orderadm_h into @data(lv_p_type)
-      where guid = @iv_guid.
+    SELECT SINGLE process_type FROM crmd_orderadm_h INTO @DATA(lv_p_type)
+      WHERE guid = @iv_guid.
 
-    call method zcl_z_jira_charm_integration=>get_jira_id
-      exporting
+    CALL METHOD zcl_z_jira_charm_integration=>get_jira_id
+      EXPORTING
         iv_guid    = iv_guid
-      importing
+      IMPORTING
         ev_jira_id = lv_jira_id.
 
-    select jira_status from zjira_mapping into table @data(lt_stat)
-      where process_type = @lv_p_type
-      and sm_status = @iv_status
-      and syst = @sy-sysid
-      and direction = 'O'.
+    SELECT jira_status FROM zjira_mapping INTO TABLE @DATA(lt_stat)
+      WHERE process_type = @lv_p_type
+      AND sm_status = @iv_status
+      AND syst = @sy-sysid
+      AND direction = 'O'.
 
-      if lv_jira_id is not initial.
-        if lt_stat is not initial.
-          loop at lt_stat into data(lv_stat).
-            lv_stat_c = lv_stat.
+    IF lv_jira_id IS NOT INITIAL.
+      IF lt_stat IS NOT INITIAL.
+        lv_iter = lines( lt_stat ).
+        LOOP AT lt_stat INTO DATA(lv_stat).
+          lv_stat_c = lv_stat.
 
-            concatenate
-            '{"update":{"comment":[{"add":{"body":"'
-            'Update from'
-            sy-sysid
-            '"}}]},"transition":{"id":'
-             lv_stat_c
-            '}}' into lv_body separated by space.
+          CONCATENATE
+          '{"update":{"comment":[{"add":{"body":"'
+          'Update from'
+          sy-sysid
+          '"}}]},"transition":{"id":'
+           lv_stat_c
+          '}}' INTO lv_body SEPARATED BY space.
 
-            concatenate lv_jira_id '/transitions' into lv_uri.
+          CONCATENATE lv_jira_id '/transitions' INTO lv_uri.
 
-            call method zcl_z_jira_charm_integration=>post
-              exporting
-                iv_body                      = lv_body
-                iv_uri                       = lv_uri
-              importing
-                ev_http_response             = lv_response
-                ev_http_response_status_code = lv_http_status.
+          CALL METHOD zcl_z_jira_charm_integration=>post
+            EXPORTING
+              iv_body                      = lv_body
+              iv_uri                       = lv_uri
+            IMPORTING
+              ev_http_response             = lv_response
+              ev_http_response_status_code = lv_http_status.
 
-            if lv_response cs '{"errorMessages"'.
-              es_error_message-msgty = 'E'.
-              es_error_message-msgid = 'ZJIRA_INT'.
-              es_error_message-msgno = '001'.
-              es_error_message-msgv1 = lv_http_status.
-              replace all occurrences of '{"errorMessages":["' in lv_response with ''.
-              es_error_message-msgv2 = lv_response.
-              if lv_response cs 'The likely cause is that somebody has changed the issue recently, please look at the issue'.
-                es_error_message-msgv1 = 'STA'.
-                concatenate 'Status not valid for doc:' lv_jira_id into es_error_message-msgv2 separated by space.
-              endif.
-            endif.
-            WAIT UP TO 5 SECONDS.
-          endloop.
-        else.
+          IF lv_http_status NS '204'.
+            es_error_message-msgty = 'E'.
+            es_error_message-msgid = 'ZJIRA_INT'.
+            es_error_message-msgno = '001'.
+            es_error_message-msgv1 = lv_http_status.
+            REPLACE ALL OCCURRENCES OF '{"errorMessages":["' IN lv_response WITH ''.
+            es_error_message-msgv2 = lv_response.
+            IF lv_response CS 'The likely cause is that somebody has changed the issue recently, please look at the issue'.
+              es_error_message-msgv1 = 'STA'.
+              CONCATENATE 'Status not valid for doc:' lv_jira_id INTO es_error_message-msgv2 SEPARATED BY space.
+            ENDIF.
+          ENDIF.
+          IF lv_iter > 1.
+            WAIT UP TO 3 SECONDS. " we changing several statuses in a row
+          ENDIF.
+        ENDLOOP.
+      ELSE.
 *        "maintain mapping table zjira_mapping error
 *        es_error_message-msgty = 'E'.
 *        es_error_message-msgid = 'ZJIRA_INT'.
 *        es_error_message-msgno = '000'.
 *        es_error_message-msgv1 = lv_p_type.
 *        es_error_message-msgv2 = iv_status.
-        endif.
-      endif.
+      ENDIF.
+    ENDIF.
 
-    endmethod.
+  ENDMETHOD.
 
 
   METHOD set_po_ref.
